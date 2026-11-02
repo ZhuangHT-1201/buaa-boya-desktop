@@ -1,0 +1,33 @@
+# Copy to config.yaml and adjust as needed. Never put passwords here.
+# Passwords are stored through the operating system keyring by the desktop app or setup command.
+# 复制为 config.yaml 后按需修改；不要在此写入密码。
+
+# null = all enabled accounts / 留空表示处理全部已启用账号
+username: null
+
+# Beijing / Hangzhou / 北京 / 杭州
+campus: 北京
+
+# Only select courses that satisfy unfinished requirements / 只补未完成类别
+only_gap_categories: true
+
+# Category priority order / 类别优先级
+prefer_categories:
+  - 德育
+  - 美育
+  - 劳动教育
+  - 安全健康
+
+# Categories to exclude / 永不自动选择的类别
+exclude_categories:
+  - 其他方面
+
+# Pending-course limit per account / 单账号已选未结束课程上限
+max_pending_selected: 4
+
+# Poll and full-refresh intervals in seconds / 轮询与全量刷新间隔（秒）
+poll_seconds: 60
+refresh_seconds: 3600
+
+# true = log decisions without real operations / 测试模式
+dry_run: false
