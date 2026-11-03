@@ -442,6 +442,125 @@ class CaptchaDialog(tk.Toplevel):
         self.destroy()
 
 
+class SelectedCoursesDialog(tk.Toplevel):
+    def __init__(
+        self,
+        app: "BoyaApp",
+        username: str,
+        courses: list[dict],
+    ) -> None:
+        super().__init__(app)
+        self.app = app
+        self.title(app.t("已选课程明细"))
+        self.configure(bg=BG)
+        self.transient(app)
+        self.grab_set()
+        self.protocol("WM_DELETE_WINDOW", self.destroy)
+
+        width, height = px(1120), px(620)
+        app.update_idletasks()
+        x = app.winfo_rootx() + (app.winfo_width() - width) // 2
+        y = app.winfo_rooty() + (app.winfo_height() - height) // 2
+        self.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
+
+        header = tk.Frame(self, bg=BG, padx=px(22), pady=px(18))
+        header.pack(fill="x")
+        tk.Label(
+            header,
+            text=app.tf("账号 {username} 的已选课程", username=username),
+            bg=BG,
+            fg=INK,
+            font=(FONT_UI, 15, "bold"),
+            anchor="w",
+        ).pack(fill="x")
+        tk.Label(
+            header,
+            text=app.t(
+                "人工选择与机器选择会分别标记；常规签到课程不会由程序修改或签到。"
+            ),
+            bg=BG,
+            fg=MUTED,
+            font=(FONT_UI, 8),
+            anchor="w",
+            wraplength=px(900),
+            justify="left",
+        ).pack(fill="x", pady=(5, 0))
+
+        card = Card(self, padx=px(8), pady=px(8))
+        card.pack(fill="both", expand=True, padx=px(22), pady=(0, px(12)))
+        columns = ("course", "category", "attendance", "origin", "status", "time")
+        tree = ttk.Treeview(card, columns=columns, show="headings")
+        headings = {
+            "course": "课程",
+            "category": "类别",
+            "attendance": "签到方式",
+            "origin": "选课来源",
+            "status": "状态",
+            "time": "课程时间",
+        }
+        widths = {
+            "course": 290,
+            "category": 130,
+            "attendance": 140,
+            "origin": 115,
+            "status": 85,
+            "time": 245,
+        }
+        for column in columns:
+            tree.heading(column, text=app.t(headings[column]))
+            tree.column(
+                column,
+                width=px(widths[column]),
+                minwidth=px(70),
+                anchor="center" if column != "course" else "w",
+            )
+        scroll = ttk.Scrollbar(card, orient="vertical", command=tree.yview)
+        tree.configure(yscrollcommand=scroll.set)
+        tree.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        if not courses:
+            tree.insert("", "end", values=(app.t("暂无已选课程"),) + ("",) * 5)
+        def short_time(value: str | None) -> str:
+            if not value:
+                return "—"
+            return value[5:16] if len(value) >= 16 else value
+
+        for course in courses:
+            tree.insert(
+                "",
+                "end",
+                values=(
+                    course.get("name", ""),
+                    app.t(course.get("category", "")),
+                    app.t(
+                        "自主签到"
+                        if course.get("autonomous_sign")
+                        else "常规签到"
+                    ),
+                    app.t(
+                        "机器选择"
+                        if course.get("origin") == "machine"
+                        else "人工选择"
+                    ),
+                    app.t("待结束" if course.get("pending") else "已结束"),
+                    f"{short_time(course.get('start'))}  →  {short_time(course.get('end'))}",
+                ),
+            )
+
+        footer = tk.Frame(self, bg=BG, padx=px(22))
+        footer.pack(fill="x", pady=(0, px(16)))
+        FlatButton(
+            footer,
+            app.t("关闭"),
+            self.destroy,
+            bg="#E8EDF6",
+            fg=INK,
+            hover="#DDE4EF",
+            padx=px(18),
+            pady=px(8),
+        ).pack(side="right")
+
+
 class BoyaApp(tk.Tk):
     def __init__(self) -> None:
         super().__init__()
@@ -957,24 +1076,46 @@ class BoyaApp(tk.Tk):
 
         notice = tk.Frame(page, bg=ACCENT_SOFT, padx=15, pady=11)
         notice.pack(fill="x", pady=(0, 12))
+        notice_top = tk.Frame(notice, bg=ACCENT_SOFT)
+        notice_top.pack(fill="x")
         tk.Label(
-            notice,
+            notice_top,
             text=self.t("批量模式"),
             bg=ACCENT_SOFT,
             fg=ACCENT_DARK,
             font=(FONT_UI, 8, "bold"),
         ).pack(side="left")
         tk.Label(
-            notice,
+            notice_top,
             text=self.t("所有标记为“启用”的账号会同时加入后台任务；停用仅暂停该账号。"),
             bg=ACCENT_SOFT,
             fg="#506BAB",
             font=(FONT_UI, 8),
         ).pack(side="left", padx=(9, 0))
+        tk.Label(
+            notice,
+            text=self.t(
+                "机器只选自主签到；人工选课不退不改。人工和机器选择的自主签到课程都会自动完成定位签到与签退。"
+            ),
+            bg=ACCENT_SOFT,
+            fg="#506BAB",
+            font=(FONT_UI, 8),
+            anchor="w",
+            justify="left",
+            wraplength=px(860),
+        ).pack(fill="x", pady=(px(5), 0))
 
         table_card = Card(page)
         table_card.pack(fill="both", expand=True)
-        columns = ("username", "status", "campus", "session", "needed", "selected")
+        columns = (
+            "username",
+            "status",
+            "campus",
+            "session",
+            "origin",
+            "needed",
+            "selected",
+        )
         self.account_tree = ttk.Treeview(
             table_card,
             columns=columns,
@@ -986,16 +1127,18 @@ class BoyaApp(tk.Tk):
             "status": "批量状态",
             "campus": "校区",
             "session": "登录状态",
+            "origin": "人工 / 机器",
             "needed": "待补类别",
-            "selected": "已选课程",
+            "selected": "总数 · 机器/上限",
         }
         widths = {
-            "username": 180,
-            "status": 100,
-            "campus": 90,
-            "session": 110,
-            "needed": 220,
-            "selected": 100,
+            "username": 150,
+            "status": 85,
+            "campus": 75,
+            "session": 105,
+            "origin": 130,
+            "needed": 170,
+            "selected": 145,
         }
         for column in columns:
             self.account_tree.heading(column, text=self.t(headings[column]))
@@ -1010,8 +1153,23 @@ class BoyaApp(tk.Tk):
             orient="vertical",
             command=self.account_tree.yview,
         )
-        self.account_tree.configure(yscrollcommand=scroll.set)
-        self.account_tree.pack(side="left", fill="both", expand=True, padx=(8, 0), pady=8)
+        horizontal = ttk.Scrollbar(
+            table_card,
+            orient="horizontal",
+            command=self.account_tree.xview,
+        )
+        self.account_tree.configure(
+            yscrollcommand=scroll.set,
+            xscrollcommand=horizontal.set,
+        )
+        horizontal.pack(side="bottom", fill="x", padx=8, pady=(0, 6))
+        self.account_tree.pack(
+            side="left",
+            fill="both",
+            expand=True,
+            padx=(8, 0),
+            pady=8,
+        )
         scroll.pack(side="right", fill="y", pady=8, padx=(0, 6))
         self.account_tree.tag_configure("disabled", foreground="#9AA4B5")
         self.account_tree.bind("<Double-1>", lambda _event: self._login_selected())
@@ -1063,6 +1221,17 @@ class BoyaApp(tk.Tk):
             toolbar,
             self.t("启用 / 停用"),
             self._toggle_selected,
+            bg="#EDF1F7",
+            fg=INK,
+            hover="#E0E6F0",
+            padx=13,
+            pady=7,
+            font_size=8,
+        ).pack(side="right", padx=(8, 0))
+        FlatButton(
+            toolbar,
+            self.t("查看已选"),
+            self._show_selected_courses,
             bg="#EDF1F7",
             fg=INK,
             hover="#E0E6F0",
@@ -1131,7 +1300,7 @@ class BoyaApp(tk.Tk):
         self._settings_row(
             form_card,
             "单账号最多已选",
-            "达到上限后暂停抢新课，但签到 / 签退仍继续。",
+            "机器已选且未结束的课程达到上限后暂停抢新课；人工选课不计入且不会被修改。",
             self.setting_vars["max_pending_selected"],
         )
         self._settings_row(
@@ -1489,6 +1658,21 @@ class BoyaApp(tk.Tk):
         if username == "__empty__":
             return None
         return username
+
+    def _show_selected_courses(self) -> None:
+        username = self._require_selected_username()
+        if not username:
+            return
+        user = next(
+            (
+                item
+                for item in self.snapshot.get("users", [])
+                if item.get("username") == username
+            ),
+            None,
+        )
+        courses = user.get("selected", []) if user else []
+        SelectedCoursesDialog(self, username, courses)
 
     def _login_selected(self) -> None:
         username = self._require_selected_username()
@@ -1884,11 +2068,21 @@ class BoyaApp(tk.Tk):
             )
             tk.Label(
                 item,
-                text=self.tf(
-                    "{campus}校区  ·  已选 {selected} 门  ·  校区有效数 {valid}",
-                    campus=self.t(user.get("campus", "")),
-                    selected=user.get("selected_count", 0),
-                    valid=valid_count,
+                text=(
+                    self.tf(
+                        "{campus}校区  ·  已选 {selected} 门  ·  校区有效数 {valid}",
+                        campus=self.t(user.get("campus", "")),
+                        selected=user.get("selected_count", 0),
+                        valid=valid_count,
+                    )
+                    + "\n"
+                    + self.tf(
+                        "人工选课 {manual} · 机器选课 {machine} · 自主签到 {autonomous} · 常规签到 {regular}",
+                        manual=user.get("manual_selected_count", 0),
+                        machine=user.get("machine_selected_count", 0),
+                        autonomous=user.get("autonomous_selected_count", 0),
+                        regular=user.get("regular_selected_count", 0),
+                    )
                 ),
                 bg="#F8FAFD",
                 fg=FAINT,
@@ -1918,6 +2112,7 @@ class BoyaApp(tk.Tk):
                     "—",
                     "—",
                     "—",
+                    "—",
                 ),
                 tags=("disabled",),
             )
@@ -1934,6 +2129,9 @@ class BoyaApp(tk.Tk):
             if not needed:
                 needed = self.t("等待统计数据") if user.enabled else "—"
             selected_count = int(view.get("selected_count", 0))
+            manual_count = int(view.get("manual_selected_count", selected_count))
+            machine_count = int(view.get("machine_selected_count", 0))
+            machine_pending = int(view.get("machine_pending_count", 0))
             self.account_tree.insert(
                 "",
                 "end",
@@ -1947,8 +2145,9 @@ class BoyaApp(tk.Tk):
                         if session_exists(self.store, user.username)
                         else "需重新登录"
                     ),
+                    f"{manual_count} / {machine_count}",
                     needed,
-                    f"{selected_count} / {self.kit.max_pending_selected}",
+                    f"{selected_count} · {machine_pending}/{self.kit.max_pending_selected}",
                 ),
                 tags=() if user.enabled else ("disabled",),
             )

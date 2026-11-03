@@ -50,6 +50,10 @@ ENGLISH = {
     "所有标记为“启用”的账号会同时加入后台任务；停用仅暂停该账号。": (
         "Every enabled account joins the background run. Disable an account to pause only that account."
     ),
+    "机器只选自主签到；人工选课不退不改。人工和机器选择的自主签到课程都会自动完成定位签到与签退。": (
+        "Automation selects autonomous check-in courses only and never changes manual choices. "
+        "Both manual and automated autonomous courses receive location check-in and check-out."
+    ),
     "账号": "Account",
     "批量状态": "Batch status",
     "校区": "Campus",
@@ -59,6 +63,36 @@ ENGLISH = {
     "全部启用": "Enable all",
     "删除": "Delete",
     "启用 / 停用": "Enable / disable",
+    "查看已选": "View selected",
+    "选课来源": "Selection origin",
+    "人工 / 机器": "Manual / Auto",
+    "总数 · 机器/上限": "Total · Auto / Cap",
+    "人工选择": "Manual",
+    "机器选择": "Automation",
+    "人工 {manual} / 机器 {machine}": "Manual {manual} / Automation {machine}",
+    "总 {total} / 机器 {machine_pending} / 上限 {cap}": (
+        "Total {total} / Auto {machine_pending} / Cap {cap}"
+    ),
+    "人工选课 {manual} · 机器选课 {machine} · 自主签到 {autonomous} · 常规签到 {regular}": (
+        "Manual {manual} · Automation {machine} · Autonomous {autonomous} · Regular {regular}"
+    ),
+    "已选课程明细": "Selected Courses",
+    "账号 {username} 的已选课程": "Selected courses for {username}",
+    "课程": "Course",
+    "类别": "Category",
+    "状态": "Status",
+    "签到方式": "Attendance",
+    "课程时间": "Course time",
+    "自主签到": "Autonomous check-in",
+    "常规签到": "Regular check-in",
+    "待结束": "Pending",
+    "已结束": "Finished",
+    "关闭": "Close",
+    "暂无已选课程": "No selected courses",
+    "人工选择与机器选择会分别标记；常规签到课程不会由程序修改或签到。": (
+        "Manual and automated selections are labeled separately. "
+        "The runner never changes or checks in to regular-sign courses."
+    ),
     "重新登录": "Sign in again",
     "启用": "Enabled",
     "停用": "Disabled",
@@ -82,8 +116,9 @@ ENGLISH = {
         "How often to reload courses, selections, and statistics. 1800–7200 seconds is recommended."
     ),
     "单账号最多已选": "Max selected per account",
-    "达到上限后暂停抢新课，但签到 / 签退仍继续。": (
-        "New selections pause at this limit. Check-in and check-out continue."
+    "机器已选且未结束的课程达到上限后暂停抢新课；人工选课不计入且不会被修改。": (
+        "Pause new automated selections at this pending-course limit. "
+        "Manual selections are never changed or counted against it."
     ),
     "优先类别": "Preferred categories",
     "使用中文逗号或英文逗号分隔，例如：德育, 美育。": (

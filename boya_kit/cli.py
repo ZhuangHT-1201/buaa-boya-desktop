@@ -119,7 +119,9 @@ def status(
             for course in user["selected"]:
                 console.print(
                     f"  - [{course['id']}] {course['name']} | {course['category']} | "
-                    f"{course['sign_method']} | {course['start'] or '?'} ~ {course['end'] or '?'}"
+                    f"{course['sign_method']} | "
+                    f"{'机器选择' if course.get('origin') == 'machine' else '人工选择'} | "
+                    f"{course['start'] or '?'} ~ {course['end'] or '?'}"
                 )
         else:
             console.print("暂无已选课程（或尚未 refresh）")

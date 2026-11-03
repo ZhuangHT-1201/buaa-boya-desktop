@@ -20,6 +20,14 @@ from autoboya.storage import AutoBoyaStore
 
 from .config import LOG_FILE, RUN_PID_FILE, STOP_FILE, KitConfig, load_config
 from .gaps import needed_categories, parse_gaps, prefer_sort_key, requirements_met
+from .selections import (
+    ORIGIN_MACHINE,
+    ORIGIN_MANUAL,
+    load_selection_origins,
+    mark_machine_selection,
+    origin_for,
+    reconcile_selection_origins,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -88,20 +96,6 @@ class GapAwareRunner(AutomationRunner):
             if pid.exists():
                 pid.unlink()
 
-
-def _attach_kit_file_logger(path: Path) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    root = logging.getLogger()
-    target = str(path.resolve())
-    for handler in root.handlers:
-        if isinstance(handler, logging.FileHandler):
-            existing = getattr(handler, "baseFilename", None)
-            if existing and str(Path(existing).resolve()) == target:
-                return
-    handler = logging.FileHandler(path, encoding="utf-8")
-    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
-    root.addHandler(handler)
-
     def request_stop(self) -> None:
         self.store.init()
         self.store.path(STOP_FILE).write_text(datetime.now().isoformat(), encoding="utf-8")
@@ -131,6 +125,10 @@ def _attach_kit_file_logger(path: Path) -> None:
             )
             self.cache.save_selected(user.username, selected)
             self.cache.save_statistics(user.username, statistics)
+        reconcile_selection_origins(
+            self.store,
+            self._selected_by_user(self.cache.load_selected()),
+        )
 
     def scan_once(self) -> list[AutomationDecision]:
         now = datetime.now()
@@ -138,6 +136,7 @@ def _attach_kit_file_logger(path: Path) -> None:
         selected_by_user = self._selected_by_user(self.cache.load_selected())
         users = self.enabled_users()
         stats_all = self.cache.load_statistics()
+        origins = load_selection_origins(self.store)
 
         decisions: list[AutomationDecision] = []
 
@@ -145,6 +144,11 @@ def _attach_kit_file_logger(path: Path) -> None:
             stats = stats_all.get(user.username, {}) if isinstance(stats_all, dict) else {}
             selected = selected_by_user.get(user.username, [])
             pending = [c for c in selected if _is_pending(c, now)]
+            machine_pending = [
+                course
+                for course in pending
+                if origin_for(origins, user.username, course.id) == ORIGIN_MACHINE
+            ]
 
             # 签到 / 签退：不依赖缺口
             for course in selected:
@@ -164,13 +168,13 @@ def _attach_kit_file_logger(path: Path) -> None:
                 )
                 continue
 
-            if len(pending) >= self.kit.max_pending_selected:
+            if len(machine_pending) >= self.kit.max_pending_selected:
                 log_event(
                     logger,
                     logging.INFO,
-                    "pending selected cap reached; skip auto-select",
+                    "machine-selected pending cap reached; skip auto-select",
                     user=mask_username(user.username),
-                    pending=len(pending),
+                    pending=len(machine_pending),
                     cap=self.kit.max_pending_selected,
                 )
                 continue
@@ -183,7 +187,7 @@ def _attach_kit_file_logger(path: Path) -> None:
             candidates = [
                 course
                 for course in courses
-                if is_auto_select_candidate(course, now, ignore_selected=True)
+                if is_machine_selectable_course(course, now)
                 and course_matches_user_campus(course, user)
                 and course.category not in self.kit.exclude_categories
                 and (not self.kit.only_gap_categories or not needed or course.category in needed)
@@ -196,7 +200,10 @@ def _attach_kit_file_logger(path: Path) -> None:
                     c.id,
                 )
             )
-            remaining_slots = max(0, self.kit.max_pending_selected - len(pending))
+            remaining_slots = max(
+                0,
+                self.kit.max_pending_selected - len(machine_pending),
+            )
             for course in candidates[:remaining_slots]:
                 decisions.append(
                     AutomationDecision(action="select", course_id=course.id, username=user.username)
@@ -219,6 +226,7 @@ def _attach_kit_file_logger(path: Path) -> None:
 
         # 父类 select 会对所有用户尝试；这里改成只对 decision.username 执行
         results: list[ActionResult] = []
+        now = datetime.now()
         selected_raw = self.cache.load_selected()
         selected_by_user = self._selected_by_user(selected_raw)
         courses_by_id = {course.id: course for course in self.cache.parsed_courses()}
@@ -235,7 +243,19 @@ def _attach_kit_file_logger(path: Path) -> None:
                     continue
                 user = users_by_name[username]
                 course = courses_by_id.get(decision.course_id)
-                if course and not course_matches_user_campus(course, user):
+                if course is None:
+                    continue
+                if not is_machine_selectable_course(course, now):
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "blocked non-autonomous or ineligible auto-select",
+                        user=mask_username(username),
+                        course_id=decision.course_id,
+                        category=course.category,
+                    )
+                    continue
+                if not course_matches_user_campus(course, user):
                     continue
                 if user_has_selected(selected_by_user, username, decision.course_id):
                     continue
@@ -249,6 +269,11 @@ def _attach_kit_file_logger(path: Path) -> None:
                 if result.ok:
                     journal[key] = result.message
                     journal.pop(select_failure_key(username, decision.course_id), None)
+                    mark_machine_selection(
+                        self.store,
+                        username,
+                        course,
+                    )
                 elif result.terminal:
                     attempts = record_select_failure(journal, username, decision.course_id, result.message)
                     log_event(
@@ -269,6 +294,8 @@ def _attach_kit_file_logger(path: Path) -> None:
             if journal.get(key):
                 continue
             course = next((item for item in selected_by_user.get(username, []) if item.id == decision.course_id), None)
+            if course is None or not has_autonomous_sign(course):
+                continue
             result = self._sign_for_user(username, course, decision.action)
             results.append(result)
             if result.ok:
@@ -276,6 +303,29 @@ def _attach_kit_file_logger(path: Path) -> None:
 
         self.store.save_json(ACTION_JOURNAL_FILE, journal)
         return results
+
+
+def _attach_kit_file_logger(path: Path) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    root = logging.getLogger()
+    target = str(path.resolve())
+    for handler in root.handlers:
+        if isinstance(handler, logging.FileHandler):
+            existing = getattr(handler, "baseFilename", None)
+            if existing and str(Path(existing).resolve()) == target:
+                return
+    handler = logging.FileHandler(path, encoding="utf-8")
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
+    root.addHandler(handler)
+
+
+def is_machine_selectable_course(course: BoyaCourse, now: datetime) -> bool:
+    """Machine selection is strictly limited to currently selectable check-in courses."""
+    return has_autonomous_sign(course) and is_auto_select_candidate(
+        course,
+        now,
+        ignore_selected=True,
+    )
 
 
 def _is_pending(course: BoyaCourse, now: datetime) -> bool:
@@ -305,6 +355,7 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
     cache = CourseCache(store)
     stats_all = cache.load_statistics()
     selected_raw = cache.load_selected()
+    origins = load_selection_origins(store)
     users = [u for u in store.user_records() if u.enabled]
     if kit.username:
         users = [u for u in users if u.username == kit.username]
@@ -316,6 +367,23 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
         stats = stats_all.get(user.username, {}) if isinstance(stats_all, dict) else {}
         selected_items = selected_raw.get(user.username, []) if isinstance(selected_raw, dict) else []
         selected = [parse_course(item) for item in selected_items] if isinstance(selected_items, list) else []
+        selected_rows = []
+        now = datetime.now()
+        for course in selected:
+            selected_rows.append(
+                {
+                    "id": course.id,
+                    "name": course.name,
+                    "category": course.category,
+                    "sign_method": course.sign_method,
+                    "autonomous_sign": has_autonomous_sign(course),
+                    "origin": origin_for(origins, user.username, course.id),
+                    "pending": _is_pending(course, now),
+                    "start": course.course_start,
+                    "end": course.course_end,
+                    "location": course.location,
+                }
+            )
         gaps = [g.__dict__ for g in parse_gaps(stats)]
         needed = needed_categories(stats, exclude=kit.exclude_categories)
         out_users.append(
@@ -327,18 +395,24 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
                 "gaps": gaps,
                 "valid_count": stats.get("validCount") if isinstance(stats, dict) else None,
                 "selected_count": len(selected),
-                "selected": [
-                    {
-                        "id": c.id,
-                        "name": c.name,
-                        "category": c.category,
-                        "sign_method": c.sign_method,
-                        "start": c.course_start,
-                        "end": c.course_end,
-                        "location": c.location,
-                    }
-                    for c in selected
-                ],
+                "manual_selected_count": sum(
+                    1 for row in selected_rows if row["origin"] == ORIGIN_MANUAL
+                ),
+                "machine_selected_count": sum(
+                    1 for row in selected_rows if row["origin"] == ORIGIN_MACHINE
+                ),
+                "autonomous_selected_count": sum(
+                    1 for row in selected_rows if row["autonomous_sign"]
+                ),
+                "regular_selected_count": sum(
+                    1 for row in selected_rows if not row["autonomous_sign"]
+                ),
+                "machine_pending_count": sum(
+                    1
+                    for row in selected_rows
+                    if row["origin"] == ORIGIN_MACHINE and row["pending"]
+                ),
+                "selected": selected_rows,
             }
         )
     return {"users": out_users, "dry_run": kit.dry_run, "only_gap_categories": kit.only_gap_categories}

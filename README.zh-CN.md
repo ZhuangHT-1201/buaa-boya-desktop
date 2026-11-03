@@ -21,6 +21,8 @@
 ## 主要功能
 
 - 只选择能够补齐未完成类别要求的自主签到课程。
+- 自动选课有双重硬校验：常规签到、没有定位签到点或已不在选课窗口的课程绝不会由机器选择。
+- 已有选课统一登记为人工选课，不退课、不替换、不改选，并在界面中与机器选课分开标记。
 - 控制台与后台进程分离，关闭窗口不会停止选课、签到或签退。
 - 多个启用账号分别登录、刷新统计和执行，共享课程池。
 - 侧边栏一键切换 English / 中文，并记住上次选择。
@@ -33,6 +35,10 @@
 | 账号管理 | 运行设置 |
 | --- | --- |
 | ![账号管理](docs/screenshots/accounts-en.png) | ![运行设置](docs/screenshots/settings-en.png) |
+
+选课明细会区分人工/机器来源，并标记每门课程是自主签到还是常规签到：
+
+![选课来源明细](docs/screenshots/selection-origin-en.png)
 
 ## 快速开始
 
@@ -102,7 +108,7 @@ python -m boya_kit logs --lines 100
 | `only_gap_categories` | `true` | 只优先补齐未完成类别 |
 | `prefer_categories` | 德育 / 美育 / 劳动教育 / 安全健康 | 类别优先顺序 |
 | `exclude_categories` | `其他方面` | 永不自动选择的类别 |
-| `max_pending_selected` | `4` | 每个账号的已选未结束课程上限 |
+| `max_pending_selected` | `4` | 每账号机器已选未结束课程上限；人工选课不计数、不修改 |
 | `poll_seconds` | `60` | 选课与签到扫描间隔 |
 | `refresh_seconds` | `3600` | 全量课程与统计刷新间隔 |
 | `dry_run` | `false` | 只记录决策，不执行真实操作 |
@@ -113,6 +119,8 @@ python -m boya_kit logs --lines 100
 
 - 密码优先写入 Windows 凭据管理器。
 - 会话、缓存和日志保存在 `C:\Users\<用户名>\.autoboya`。
+- 选课来源保存在 `.autoboya/cache/selection_origins.json`；历史已选课程迁移为人工选课，机器成功
+  选择的课程会单独标记。
 - 本项目不会把账号数据上传到第三方服务器。
 - 从界面删除账号不会自动清除 Windows 凭据。
 - 不要在公开 Issue 中发布密码、Cookie、会话文件或可识别的账号截图。
@@ -135,6 +143,7 @@ boya_kit/
   gui.py          桌面控制台与中英文切换
   i18n.py         英文翻译表
   runner.py       按缺口过滤的后台自动化
+  selections.py   人工/机器选课来源与状态核对
   service.py      后台生命周期、凭据与登录
   cli.py          命令行接口
 docs/screenshots/ 英文界面截图

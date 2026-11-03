@@ -22,7 +22,8 @@ prefer_categories:
 exclude_categories:
   - 其他方面
 
-# Pending-course limit per account / 单账号已选未结束课程上限
+# Automation-selected pending limit; manual courses are not counted or changed.
+# 每账号机器已选未结束课程上限；人工选课不计入且不会被修改。
 max_pending_selected: 4
 
 # Poll and full-refresh intervals in seconds / 轮询与全量刷新间隔（秒）

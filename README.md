@@ -24,6 +24,10 @@ run unattended course selection, and keep the background runner alive after the 
 
 - **Gap-aware selection** — selects autonomous check-in courses only when they help satisfy an
   unfinished category requirement.
+- **Strict autonomous-only selection** — regular-signin courses are rejected both while building the
+  plan and again immediately before a selection request is sent.
+- **Manual selections stay untouched** — existing courses are recorded as manual, never dropped or
+  replaced, and shown separately from automation-selected courses.
 - **True background operation** — the GUI launches a separate runner. Closing the console does not
   stop selection, check-in, or check-out.
 - **Multi-account workflow** — every enabled account signs in, refreshes statistics, and executes
@@ -42,13 +46,20 @@ run unattended course selection, and keep the background runner alive after the 
 | --- | --- |
 | ![Account management](docs/screenshots/accounts-en.png) | ![Settings](docs/screenshots/settings-en.png) |
 
+Selection provenance distinguishes pre-existing manual choices from automation-created choices,
+while also showing whether each course uses autonomous or regular check-in:
+
+![Selection provenance](docs/screenshots/selection-origin-en.png)
+
 ## How it works
 
 1. The desktop console stores credentials in Windows Credential Manager and completes SSO sign-in.
 2. The runner refreshes the shared course catalog plus each account's selected courses and statistics.
 3. It maps unfinished statistics to category gaps, then filters eligible autonomous check-in courses.
-4. At the configured time windows, it performs check-in or check-out for courses already selected by
-   that account. Once the requirements are met, it stops selecting new courses.
+   Courses with regular sign-in or no location sign point never pass the machine-selection gate.
+4. At the configured time windows, it performs check-in or check-out for every selected autonomous
+   course, regardless of whether the selection was manual or automated. Regular-signin courses are
+   ignored.
 
 The console and worker are separate processes. Use **Stop background** in the app when you want to
 end automation; closing the window only closes the console.
@@ -126,7 +137,7 @@ The GUI writes `config.yaml` next to the executable. Passwords are never stored 
 | `only_gap_categories` | `true` | Prefer courses that satisfy unfinished categories |
 | `prefer_categories` | moral / aesthetic / labor / health | Gap priority order |
 | `exclude_categories` | `其他方面` | Categories that are never selected automatically |
-| `max_pending_selected` | `4` | Pending-course cap per account |
+| `max_pending_selected` | `4` | Cap for pending automation-selected courses; manual selections are not counted or changed |
 | `poll_seconds` | `60` | Selection and attendance scan interval |
 | `refresh_seconds` | `3600` | Full course and statistics refresh interval |
 | `dry_run` | `false` | Log decisions without making real requests |
@@ -138,6 +149,8 @@ selections.
 
 - Credentials are stored through the operating system keyring when available.
 - Local sessions, statistics, courses, and logs live under `C:\Users\<you>\.autoboya`.
+- Selection provenance is stored in `.autoboya/cache/selection_origins.json`. Existing entries migrate
+  as manual selections; successful automation selections are marked separately.
 - No account data is uploaded by this project.
 - Removing an account from the GUI does not automatically erase its Windows Credential Manager entry.
 - Do not attach passwords, cookies, session exports, or identifiable screenshots to public issues.
@@ -161,6 +174,7 @@ boya_kit/
   gui.py          Tkinter desktop console and bilingual UI
   i18n.py         English translation catalog
   runner.py       Gap-aware background automation
+  selections.py   Manual/automation provenance and reconciliation
   service.py      Worker lifecycle, keyring, and login helpers
   cli.py          Typer command-line interface
 docs/screenshots/ English interface screenshots
