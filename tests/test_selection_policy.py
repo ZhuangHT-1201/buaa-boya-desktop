@@ -193,7 +193,7 @@ def test_attendance_includes_manual_and_machine_autonomous_courses(tmp_path) -> 
     )
 
 
-def test_scan_selects_autonomous_course_from_another_campus(tmp_path) -> None:
+def test_scan_rejects_hangzhou_autonomous_course(tmp_path) -> None:
     store = AutoBoyaStore(tmp_path)
     store.init()
     store.upsert_user(
@@ -244,7 +244,7 @@ def test_scan_selects_autonomous_course_from_another_campus(tmp_path) -> None:
     )
     decisions = runner.scan_once()
 
-    assert AutomationDecision("select", cross_campus.id, "student") in decisions
+    assert AutomationDecision("select", cross_campus.id, "student") not in decisions
 
 
 def test_course_assessment_status_mapping() -> None:

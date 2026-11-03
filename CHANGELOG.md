@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.3.3
+
+- Restricted automation-selected courses to Beijing, Shahe, and all-campus offerings.
+- Hangzhou-campus courses can no longer be selected by the automation runner.
+- Existing manually selected courses remain untouched.
+
 ## 0.3.2
 
 - Removed campus matching from machine course selection; autonomous check-in courses from either

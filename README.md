@@ -24,8 +24,8 @@ run unattended course selection, and keep the background runner alive after the 
 
 - **Gap-aware selection** — selects autonomous check-in courses only when they help satisfy an
   category slot that is still unselected (`required - selected`).
-- **Campus-agnostic selection** — autonomous check-in courses from either Beijing or Hangzhou are
-  eligible; campus metadata does not block machine selection.
+- **Beijing-campus selection** — automation may select Beijing, Shahe, and all-campus autonomous
+  check-in courses. Hangzhou-campus courses are excluded.
 - **Strict autonomous-only selection** — regular-signin courses are rejected both while building the
   plan and again immediately before a selection request is sent.
 - **Manual selections stay untouched** — existing courses are recorded as manual, never dropped or
@@ -60,7 +60,7 @@ choices, and shows both category progress and each course's assessment state:
 1. The desktop console stores credentials in Windows Credential Manager and completes SSO sign-in.
 2. The runner refreshes the shared course catalog plus each account's selected courses and statistics.
 3. It maps unfilled requirement slots (`required - selected`) to category gaps, then filters eligible
-   autonomous check-in courses across both campuses.
+   Beijing, Shahe, and all-campus autonomous check-in courses. Hangzhou courses are excluded.
    Courses with regular sign-in or no location sign point never pass the machine-selection gate.
 4. At the configured time windows, it performs check-in or check-out for every selected autonomous
    course, regardless of whether the selection was manual or automated. Regular-signin courses are
@@ -138,7 +138,7 @@ The GUI writes `config.yaml` next to the executable. Passwords are never stored 
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `username` | `null` | `null` processes all enabled accounts |
-| `campus` | `北京` | Account metadata; no longer restricts autonomous machine selection |
+| `campus` | `北京` | Account metadata; course eligibility is enforced independently |
 | `only_gap_categories` | `true` | Prefer courses that satisfy unfinished categories |
 | `prefer_categories` | moral / aesthetic / labor / health | Gap priority order |
 | `exclude_categories` | `其他方面` | Categories that are never selected automatically |

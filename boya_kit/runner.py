@@ -18,6 +18,7 @@ from autoboya.rules import (
 )
 from autoboya.scheduler import (
     AutomationRunner,
+    is_hangzhou_course,
     select_failure_attempts,
     user_has_selected,
 )
@@ -337,10 +338,14 @@ def _attach_kit_file_logger(path: Path) -> None:
 
 def is_machine_selectable_course(course: BoyaCourse, now: datetime) -> bool:
     """Machine selection is strictly limited to currently selectable check-in courses."""
-    return has_autonomous_sign(course) and is_auto_select_candidate(
-        course,
-        now,
-        ignore_selected=True,
+    return (
+        not is_hangzhou_course(course)
+        and has_autonomous_sign(course)
+        and is_auto_select_candidate(
+            course,
+            now,
+            ignore_selected=True,
+        )
     )
 
 
@@ -494,6 +499,7 @@ def _candidate_diagnostics(
         course
         for course in courses
         if course.id not in selected_ids
+        and not is_hangzhou_course(course)
         and has_autonomous_sign(course)
         and course.category in needed
     ]
