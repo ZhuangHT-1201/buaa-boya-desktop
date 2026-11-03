@@ -9,17 +9,28 @@ from pathlib import Path
 from autoboya.cache import CourseCache
 from autoboya.logging import configure_logging, log_event, mask_username
 from autoboya.models import ActionResult, AutomationDecision, BoyaCourse, UserRecord
-from autoboya.rules import has_autonomous_sign, is_auto_select_candidate, sign_window_for
+from autoboya.rules import (
+    has_autonomous_sign,
+    in_window,
+    is_auto_select_candidate,
+    parse_dt,
+    sign_window_for,
+)
 from autoboya.scheduler import (
     AutomationRunner,
-    course_matches_user_campus,
     select_failure_attempts,
     user_has_selected,
 )
 from autoboya.storage import AutoBoyaStore
 
 from .config import LOG_FILE, RUN_PID_FILE, STOP_FILE, KitConfig, load_config
-from .gaps import needed_categories, parse_gaps, prefer_sort_key, requirements_met
+from .gaps import (
+    gaps_payload,
+    needed_categories,
+    prefer_sort_key,
+    requirements_met,
+    selection_requirements_met,
+)
 from .selections import (
     ORIGIN_MACHINE,
     ORIGIN_MANUAL,
@@ -159,11 +170,14 @@ class GapAwareRunner(AutomationRunner):
                 if sign_window_for(course, 2, now):
                     decisions.append(AutomationDecision(action="signout", course_id=course.id, username=user.username))
 
-            if requirements_met(stats, exclude=self.kit.exclude_categories):
+            if selection_requirements_met(
+                stats,
+                exclude=self.kit.exclude_categories,
+            ):
                 log_event(
                     logger,
                     logging.INFO,
-                    "requirements met; skip auto-select",
+                    "all requirement slots selected; skip auto-select",
                     user=mask_username(user.username),
                 )
                 continue
@@ -181,16 +195,20 @@ class GapAwareRunner(AutomationRunner):
 
             needed = needed_categories(stats, exclude=self.kit.exclude_categories)
             if self.kit.only_gap_categories and not needed:
-                # 统计还没刷出来时，回退到「非排除类别」
-                needed = []
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "no unfilled category slots; skip auto-select",
+                    user=mask_username(user.username),
+                )
+                continue
 
             candidates = [
                 course
                 for course in courses
                 if is_machine_selectable_course(course, now)
-                and course_matches_user_campus(course, user)
                 and course.category not in self.kit.exclude_categories
-                and (not self.kit.only_gap_categories or not needed or course.category in needed)
+                and (not self.kit.only_gap_categories or course.category in needed)
                 and not user_has_selected(selected_by_user, user.username, course.id)
             ]
             candidates.sort(
@@ -254,8 +272,6 @@ class GapAwareRunner(AutomationRunner):
                         course_id=decision.course_id,
                         category=course.category,
                     )
-                    continue
-                if not course_matches_user_campus(course, user):
                     continue
                 if user_has_selected(selected_by_user, username, decision.course_id):
                     continue
@@ -356,6 +372,7 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
     stats_all = cache.load_statistics()
     selected_raw = cache.load_selected()
     origins = load_selection_origins(store)
+    courses = cache.parsed_courses()
     users = [u for u in store.user_records() if u.enabled]
     if kit.username:
         users = [u for u in users if u.username == kit.username]
@@ -366,10 +383,16 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
     for user in users:
         stats = stats_all.get(user.username, {}) if isinstance(stats_all, dict) else {}
         selected_items = selected_raw.get(user.username, []) if isinstance(selected_raw, dict) else []
-        selected = [parse_course(item) for item in selected_items] if isinstance(selected_items, list) else []
+        selected_pairs = (
+            [(item, parse_course(item)) for item in selected_items]
+            if isinstance(selected_items, list)
+            else []
+        )
+        selected = [course for _item, course in selected_pairs]
         selected_rows = []
         now = datetime.now()
-        for course in selected:
+        for item, course in selected_pairs:
+            assessment_status = _course_assessment_status(item, course, now)
             selected_rows.append(
                 {
                     "id": course.id,
@@ -379,13 +402,24 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
                     "autonomous_sign": has_autonomous_sign(course),
                     "origin": origin_for(origins, user.username, course.id),
                     "pending": _is_pending(course, now),
+                    "assessment_status": assessment_status,
+                    "pass": item.get("pass"),
+                    "score": item.get("score"),
+                    "selected_at": item.get("selectDate"),
                     "start": course.course_start,
                     "end": course.course_end,
                     "location": course.location,
                 }
             )
-        gaps = [g.__dict__ for g in parse_gaps(stats)]
+        gaps = gaps_payload(stats)
         needed = needed_categories(stats, exclude=kit.exclude_categories)
+        selected_ids = {course.id for course in selected}
+        candidate_status = _candidate_diagnostics(
+            courses,
+            selected_ids,
+            needed,
+            now,
+        )
         out_users.append(
             {
                 "username": user.username,
@@ -412,7 +446,90 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
                     for row in selected_rows
                     if row["origin"] == ORIGIN_MACHINE and row["pending"]
                 ),
+                "passed_selected_count": sum(
+                    1
+                    for row in selected_rows
+                    if row["assessment_status"] == "passed"
+                ),
+                "failed_selected_count": sum(
+                    1
+                    for row in selected_rows
+                    if row["assessment_status"] == "not_passed"
+                ),
+                "pending_assessment_count": sum(
+                    1
+                    for row in selected_rows
+                    if row["assessment_status"] in {"pending", "pending_result"}
+                ),
+                **candidate_status,
                 "selected": selected_rows,
             }
         )
     return {"users": out_users, "dry_run": kit.dry_run, "only_gap_categories": kit.only_gap_categories}
+
+
+def _course_assessment_status(
+    item: dict,
+    course: BoyaCourse,
+    now: datetime,
+) -> str:
+    pass_value = item.get("pass")
+    if pass_value is True or str(pass_value) == "1":
+        return "passed"
+    end = parse_dt(course.course_end)
+    finished = end is not None and end < now
+    if pass_value is False or str(pass_value) == "0":
+        return "not_passed" if finished else "pending"
+    return "pending_result" if finished else "pending"
+
+
+def _candidate_diagnostics(
+    courses: list[BoyaCourse],
+    selected_ids: set[int],
+    needed_categories: list[str],
+    now: datetime,
+) -> dict[str, object]:
+    needed = set(needed_categories)
+    relevant = [
+        course
+        for course in courses
+        if course.id not in selected_ids
+        and has_autonomous_sign(course)
+        and course.category in needed
+    ]
+    open_courses = [
+        course
+        for course in relevant
+        if in_window(course.select_start, course.select_end, now)
+    ]
+    full_open = [
+        course
+        for course in open_courses
+        if course.current_count is not None
+        and course.max_count is not None
+        and course.current_count >= course.max_count
+    ]
+    available = [
+        course
+        for course in open_courses
+        if course not in full_open
+    ]
+    future = []
+    for course in relevant:
+        starts = parse_dt(course.select_start)
+        if starts is None or starts <= now:
+            continue
+        if course.current_count is not None and course.max_count is not None:
+            if course.current_count >= course.max_count:
+                continue
+        future.append((starts, course))
+    next_open = min(future, key=lambda item: item[0])[0] if future else None
+    return {
+        "open_needed_candidate_count": len(available),
+        "full_needed_candidate_count": len(full_open),
+        "next_needed_candidate_at": (
+            next_open.isoformat(sep=" ", timespec="minutes")
+            if next_open
+            else None
+        ),
+    }

@@ -5,8 +5,11 @@ from autoboya.cache import CourseCache
 from autoboya.storage import AutoBoyaStore
 
 from boya_kit.config import KitConfig
-from boya_kit.runner import is_machine_selectable_course
-from boya_kit.runner import GapAwareRunner
+from boya_kit.runner import (
+    GapAwareRunner,
+    _course_assessment_status,
+    is_machine_selectable_course,
+)
 from boya_kit.selections import (
     ORIGIN_MACHINE,
     ORIGIN_MANUAL,
@@ -188,3 +191,72 @@ def test_attendance_includes_manual_and_machine_autonomous_courses(tmp_path) -> 
     assert not any(
         decision.course_id == manual_regular.id for decision in decisions
     )
+
+
+def test_scan_selects_autonomous_course_from_another_campus(tmp_path) -> None:
+    store = AutoBoyaStore(tmp_path)
+    store.init()
+    store.upsert_user(
+        UserRecord(username="student", enabled=True, campus="北京")
+    )
+    cross_campus = make_course(40, autonomous=True, category="劳动教育")
+    cross_campus.campus = "杭州"
+    cross_campus.raw = {
+        "id": 40,
+        "courseName": "Course 40",
+        "courseKind": "劳动教育",
+        "selected": False,
+        "courseCampus": "[2]",
+        "courseCampusList": ["杭州校区"],
+        "courseSelectStartDate": cross_campus.select_start,
+        "courseSelectEndDate": cross_campus.select_end,
+        "courseCurrentCount": 0,
+        "courseMaxCount": 20,
+        "courseSignConfig": cross_campus.sign_config,
+    }
+    cache = CourseCache(store)
+    cache.save_courses([cross_campus])
+    cache.save_selected("student", [])
+    cache.save_statistics(
+        "student",
+        {
+            "statistical": {
+                "group": {
+                    "57|劳动教育": {
+                        "assessmentCount": "1",
+                        "selectAssessmentCount": "0",
+                        "completeAssessmentCount": "0",
+                        "failAssessmentCount": "0",
+                        "undoneAssessmentCount": "0",
+                    }
+                }
+            }
+        },
+    )
+
+    runner = GapAwareRunner(
+        store,
+        KitConfig(
+            username="student",
+            only_gap_categories=True,
+            max_pending_selected=4,
+        ),
+    )
+    decisions = runner.scan_once()
+
+    assert AutomationDecision("select", cross_campus.id, "student") in decisions
+
+
+def test_course_assessment_status_mapping() -> None:
+    now = datetime.now()
+    passed = make_course(50, autonomous=True)
+    passed.course_end = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    failed = make_course(51, autonomous=True)
+    failed.course_end = (now - timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+    pending = make_course(52, autonomous=True)
+    pending.course_end = (now + timedelta(hours=1)).strftime("%Y-%m-%d %H:%M:%S")
+
+    assert _course_assessment_status({"pass": 1}, passed, now) == "passed"
+    assert _course_assessment_status({"pass": 0}, failed, now) == "not_passed"
+    assert _course_assessment_status({"pass": 0}, pending, now) == "pending"
+    assert _course_assessment_status({"pass": None}, failed, now) == "pending_result"

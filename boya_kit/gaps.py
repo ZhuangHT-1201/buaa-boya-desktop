@@ -14,8 +14,23 @@ class CategoryGap:
     undone: int
 
     @property
+    def remaining_to_select(self) -> int:
+        """Unfilled requirement slots that still need a course selection."""
+        return max(0, self.required - self.selected)
+
+    @property
+    def pending(self) -> int:
+        """Selected courses that are neither passed nor marked failed yet."""
+        return max(0, self.selected - self.completed - self.failed)
+
+    @property
+    def remaining_to_pass(self) -> int:
+        """Requirement slots not yet completed, including pending/failed courses."""
+        return max(0, self.required - self.completed)
+
+    @property
     def needs_more(self) -> bool:
-        return self.undone > 0
+        return self.remaining_to_select > 0
 
 
 def label_after_pipe(value: str) -> str:
@@ -62,7 +77,36 @@ def requirements_met(stats: dict[str, Any] | None, exclude: Iterable[str] = ()) 
     if not gaps:
         return False
     excluded = set(exclude)
-    return all((not g.needs_more) or g.category in excluded for g in gaps)
+    return all(
+        g.remaining_to_pass == 0 or g.category in excluded
+        for g in gaps
+    )
+
+
+def selection_requirements_met(
+    stats: dict[str, Any] | None,
+    exclude: Iterable[str] = (),
+) -> bool:
+    gaps = parse_gaps(stats)
+    if not gaps:
+        return False
+    excluded = set(exclude)
+    return all(
+        g.remaining_to_select == 0 or g.category in excluded
+        for g in gaps
+    )
+
+
+def gaps_payload(stats: dict[str, Any] | None) -> list[dict[str, Any]]:
+    return [
+        {
+            **gap.__dict__,
+            "remaining_to_select": gap.remaining_to_select,
+            "pending": gap.pending,
+            "remaining_to_pass": gap.remaining_to_pass,
+        }
+        for gap in parse_gaps(stats)
+    ]
 
 
 def prefer_sort_key(category: str, prefer: list[str]) -> tuple[int, str]:

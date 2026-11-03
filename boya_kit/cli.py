@@ -104,14 +104,20 @@ def status(
         table.add_column("要求", justify="right")
         table.add_column("已选", justify="right")
         table.add_column("完成", justify="right")
+        table.add_column("待考核", justify="right")
+        table.add_column("未通过", justify="right")
         table.add_column("未完成", justify="right")
+        table.add_column("待选", justify="right")
         for gap in user["gaps"]:
             table.add_row(
                 gap["category"],
                 str(gap["required"]),
                 str(gap["selected"]),
                 str(gap["completed"]),
+                str(gap["pending"]),
+                str(gap["failed"]),
                 str(gap["undone"]),
+                str(gap["remaining_to_select"]),
             )
         console.print(table)
         if user["selected"]:
@@ -121,6 +127,7 @@ def status(
                     f"  - [{course['id']}] {course['name']} | {course['category']} | "
                     f"{course['sign_method']} | "
                     f"{'机器选择' if course.get('origin') == 'machine' else '人工选择'} | "
+                    f"{course.get('assessment_status', 'pending')} | "
                     f"{course['start'] or '?'} ~ {course['end'] or '?'}"
                 )
         else:

@@ -442,37 +442,68 @@ class CaptchaDialog(tk.Toplevel):
         self.destroy()
 
 
-class SelectedCoursesDialog(tk.Toplevel):
-    def __init__(
-        self,
-        app: "BoyaApp",
-        username: str,
-        courses: list[dict],
-    ) -> None:
+class AccountStatusDialog(tk.Toplevel):
+    def __init__(self, app: "BoyaApp", user: dict) -> None:
         super().__init__(app)
         self.app = app
+        self.user = user
         self.title(app.t("已选课程明细"))
         self.configure(bg=BG)
         self.transient(app)
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 
-        width, height = px(1120), px(620)
+        width, height = px(1180), px(760)
         app.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - width) // 2
         y = app.winfo_rooty() + (app.winfo_height() - height) // 2
         self.geometry(f"{width}x{height}+{max(0, x)}+{max(0, y)}")
 
-        header = tk.Frame(self, bg=BG, padx=px(22), pady=px(18))
+        username = str(user.get("username", ""))
+        courses = user.get("selected", [])
+        gaps = user.get("gaps", [])
+        remaining_to_select = sum(
+            int(gap.get("remaining_to_select", 0)) for gap in gaps
+        )
+        pending_count = int(user.get("pending_assessment_count", 0))
+        passed_count = int(user.get("passed_selected_count", 0))
+
+        header = tk.Frame(self, bg=BG, padx=px(22), pady=px(16))
         header.pack(fill="x")
+        title_row = tk.Frame(header, bg=BG)
+        title_row.pack(fill="x")
         tk.Label(
-            header,
-            text=app.tf("账号 {username} 的已选课程", username=username),
+            title_row,
+            text=app.tf("账号状态 · {username}", username=username),
             bg=BG,
             fg=INK,
             font=(FONT_UI, 15, "bold"),
             anchor="w",
-        ).pack(fill="x")
+        ).pack(side="left")
+        if user.get("requirements_met"):
+            status_text = app.t("要求已完成")
+            status_bg = GREEN_SOFT
+            status_fg = GREEN
+        elif remaining_to_select > 0:
+            status_text = app.tf(
+                "还需选 {count} 门",
+                count=remaining_to_select,
+            )
+            status_bg = AMBER_SOFT
+            status_fg = AMBER
+        else:
+            status_text = app.t("等待考核结果")
+            status_bg = ACCENT_SOFT
+            status_fg = ACCENT_DARK
+        tk.Label(
+            title_row,
+            text=status_text,
+            bg=status_bg,
+            fg=status_fg,
+            font=(FONT_UI, 8, "bold"),
+            padx=px(9),
+            pady=px(4),
+        ).pack(side="right")
         tk.Label(
             header,
             text=app.t(
@@ -482,36 +513,179 @@ class SelectedCoursesDialog(tk.Toplevel):
             fg=MUTED,
             font=(FONT_UI, 8),
             anchor="w",
-            wraplength=px(900),
+            wraplength=px(1000),
             justify="left",
-        ).pack(fill="x", pady=(5, 0))
+        ).pack(fill="x", pady=(px(5), 0))
+        available = int(user.get("open_needed_candidate_count", 0))
+        full_open = int(user.get("full_needed_candidate_count", 0))
+        next_open = user.get("next_needed_candidate_at")
+        if available:
+            candidate_text = app.tf(
+                "当前有 {available} 门符合缺口的自主签到课程可选",
+                available=available,
+            )
+            candidate_fg = GREEN
+        elif full_open:
+            candidate_text = app.tf(
+                "开放中的缺口课程已满额：{full} 门",
+                full=full_open,
+            )
+            candidate_fg = AMBER
+        elif next_open:
+            candidate_text = app.tf(
+                "下一门符合缺口的自主签到课程开放时间：{time}",
+                time=next_open,
+            )
+            candidate_fg = ACCENT_DARK
+        else:
+            candidate_text = app.t(
+                "当前没有符合缺口且开放的自主签到课程，后台会继续巡检。"
+            )
+            candidate_fg = MUTED
+        tk.Label(
+            header,
+            text=candidate_text,
+            bg=BG,
+            fg=candidate_fg,
+            font=(FONT_UI, 8, "bold"),
+            anchor="w",
+            wraplength=px(1000),
+            justify="left",
+        ).pack(fill="x", pady=(px(5), 0))
+
+        summary = tk.Frame(self, bg=BG)
+        summary.pack(fill="x", padx=px(22), pady=(0, px(10)))
+        for index in range(4):
+            summary.grid_columnconfigure(index, weight=1)
+        summary_values = [
+            ("已选", user.get("selected_count", 0), ACCENT),
+            ("已通过", passed_count, GREEN),
+            ("待考核", pending_count, AMBER),
+            ("需选择", remaining_to_select, RED if remaining_to_select else GREEN),
+        ]
+        for index, (label, value, color) in enumerate(summary_values):
+            item = Card(summary, padx=px(12), pady=px(8))
+            item.grid(
+                row=0,
+                column=index,
+                sticky="nsew",
+                padx=(0 if index == 0 else px(4), 0 if index == 3 else px(4)),
+            )
+            tk.Label(
+                item,
+                text=app.t(label),
+                bg=CARD,
+                fg=MUTED,
+                font=(FONT_UI, 8),
+            ).pack(anchor="w")
+            tk.Label(
+                item,
+                text=str(value),
+                bg=CARD,
+                fg=color,
+                font=(FONT_UI, 16, "bold"),
+            ).pack(anchor="w")
+
+        category_card = Card(self, padx=px(8), pady=px(8))
+        category_card.pack(
+            fill="x",
+            padx=px(22),
+            pady=(0, px(8)),
+        )
+        tk.Label(
+            category_card,
+            text=app.t("类别要求"),
+            bg=CARD,
+            fg=INK,
+            font=(FONT_UI, 9, "bold"),
+            anchor="w",
+        ).pack(fill="x", padx=px(5), pady=(0, px(4)))
+        category_columns = (
+            "category",
+            "required",
+            "selected",
+            "passed",
+            "pending",
+            "failed",
+            "to_select",
+        )
+        category_tree = ttk.Treeview(
+            category_card,
+            columns=category_columns,
+            show="headings",
+            height=4,
+        )
+        category_headings = {
+            "category": "类别",
+            "required": "要求",
+            "selected": "已选",
+            "passed": "已通过",
+            "pending": "待考核",
+            "failed": "未通过",
+            "to_select": "需选择",
+        }
+        for column in category_columns:
+            category_tree.heading(
+                column,
+                text=app.t(category_headings[column]),
+            )
+            category_tree.column(
+                column,
+                width=px(135 if column != "category" else 180),
+                anchor="center" if column != "category" else "w",
+            )
+        category_tree.pack(fill="x")
+        for gap in gaps:
+            category_tree.insert(
+                "",
+                "end",
+                values=(
+                    app.t(str(gap.get("category", ""))),
+                    gap.get("required", 0),
+                    gap.get("selected", 0),
+                    gap.get("completed", 0),
+                    gap.get("pending", 0),
+                    gap.get("failed", 0),
+                    gap.get("remaining_to_select", 0),
+                ),
+            )
 
         card = Card(self, padx=px(8), pady=px(8))
-        card.pack(fill="both", expand=True, padx=px(22), pady=(0, px(12)))
-        columns = ("course", "category", "attendance", "origin", "status", "time")
+        card.pack(fill="both", expand=True, padx=px(22), pady=(0, px(10)))
+        columns = (
+            "course",
+            "category",
+            "attendance",
+            "origin",
+            "assessment",
+            "score",
+            "time",
+        )
         tree = ttk.Treeview(card, columns=columns, show="headings")
         headings = {
             "course": "课程",
             "category": "类别",
             "attendance": "签到方式",
             "origin": "选课来源",
-            "status": "状态",
+            "assessment": "考核结果",
+            "score": "成绩",
             "time": "课程时间",
         }
         widths = {
-            "course": 290,
-            "category": 130,
-            "attendance": 140,
-            "origin": 115,
-            "status": 85,
-            "time": 245,
+            "course": 250,
+            "category": 105,
+            "attendance": 130,
+            "origin": 100,
+            "assessment": 110,
+            "score": 70,
+            "time": 190,
         }
         for column in columns:
             tree.heading(column, text=app.t(headings[column]))
             tree.column(
                 column,
                 width=px(widths[column]),
-                minwidth=px(70),
+                minwidth=px(60),
                 anchor="center" if column != "course" else "w",
             )
         scroll = ttk.Scrollbar(card, orient="vertical", command=tree.yview)
@@ -519,19 +693,26 @@ class SelectedCoursesDialog(tk.Toplevel):
         tree.pack(side="left", fill="both", expand=True)
         scroll.pack(side="right", fill="y")
         if not courses:
-            tree.insert("", "end", values=(app.t("暂无已选课程"),) + ("",) * 5)
+            tree.insert("", "end", values=(app.t("暂无已选课程"),) + ("",) * 6)
+
         def short_time(value: str | None) -> str:
             if not value:
                 return "—"
             return value[5:16] if len(value) >= 16 else value
 
+        assessment_labels = {
+            "passed": "考核通过",
+            "not_passed": "未通过",
+            "pending": "待考核",
+            "pending_result": "待公布",
+        }
         for course in courses:
             tree.insert(
                 "",
                 "end",
                 values=(
                     course.get("name", ""),
-                    app.t(course.get("category", "")),
+                    app.t(str(course.get("category", ""))),
                     app.t(
                         "自主签到"
                         if course.get("autonomous_sign")
@@ -542,13 +723,19 @@ class SelectedCoursesDialog(tk.Toplevel):
                         if course.get("origin") == "machine"
                         else "人工选择"
                     ),
-                    app.t("待结束" if course.get("pending") else "已结束"),
+                    app.t(
+                        assessment_labels.get(
+                            str(course.get("assessment_status", "")),
+                            "待考核",
+                        )
+                    ),
+                    course.get("score") if course.get("score") is not None else "—",
                     f"{short_time(course.get('start'))}  →  {short_time(course.get('end'))}",
                 ),
             )
 
         footer = tk.Frame(self, bg=BG, padx=px(22))
-        footer.pack(fill="x", pady=(0, px(16)))
+        footer.pack(fill="x", pady=(0, px(14)))
         FlatButton(
             footer,
             app.t("关闭"),
@@ -958,7 +1145,7 @@ class BoyaApp(tk.Tk):
         self.metric_values: dict[str, tk.Label] = {}
         metric_specs = [
             ("accounts", "已启用账号", ACCENT, "批量运行"),
-            ("needed", "待补类别", AMBER, "按统计缺口"),
+            ("needed", "待选课程", AMBER, "统计空缺"),
             ("selected", "已选课程", GREEN, "跟踪签到签退"),
         ]
         for column, (key, title, color, hint) in enumerate(metric_specs):
@@ -1230,7 +1417,7 @@ class BoyaApp(tk.Tk):
         ).pack(side="right", padx=(8, 0))
         FlatButton(
             toolbar,
-            self.t("查看已选"),
+            self.t("账号状态"),
             self._show_selected_courses,
             bg="#EDF1F7",
             fg=INK,
@@ -1659,10 +1846,10 @@ class BoyaApp(tk.Tk):
             return None
         return username
 
-    def _show_selected_courses(self) -> None:
+    def _show_selected_courses(self) -> AccountStatusDialog | None:
         username = self._require_selected_username()
         if not username:
-            return
+            return None
         user = next(
             (
                 item
@@ -1671,8 +1858,9 @@ class BoyaApp(tk.Tk):
             ),
             None,
         )
-        courses = user.get("selected", []) if user else []
-        SelectedCoursesDialog(self, username, courses)
+        if user:
+            return AccountStatusDialog(self, user)
+        return None
 
     def _login_selected(self) -> None:
         username = self._require_selected_username()
@@ -1971,10 +2159,14 @@ class BoyaApp(tk.Tk):
     def _render_dashboard(self) -> None:
         users = self.snapshot.get("users", [])
         enabled_count = len(users)
-        needed_count = sum(len(user.get("needed_categories", [])) for user in users)
+        to_select_count = sum(
+            int(gap.get("remaining_to_select", 0))
+            for user in users
+            for gap in user.get("gaps", [])
+        )
         selected_count = sum(int(user.get("selected_count", 0)) for user in users)
         self.metric_values["accounts"].configure(text=str(enabled_count))
-        self.metric_values["needed"].configure(text=str(needed_count))
+        self.metric_values["needed"].configure(text=str(to_select_count))
         self.metric_values["selected"].configure(text=str(selected_count))
 
         for child in self.dashboard_accounts.inner.winfo_children():
@@ -2025,17 +2217,34 @@ class BoyaApp(tk.Tk):
             ).pack(side="left")
             met = bool(user.get("requirements_met"))
             needed_categories = " / ".join(
-                self.t(category) for category in user.get("needed_categories", [])
+                f"{self.t(str(gap.get('category', '')))} ×{gap.get('remaining_to_select', 0)}"
+                for gap in user.get("gaps", [])
+                if int(gap.get("remaining_to_select", 0)) > 0
             )
+            if met:
+                status_text = self.t("要求已完成")
+                status_bg = GREEN_SOFT
+                status_fg = GREEN
+            elif needed_categories:
+                status_text = self.tf(
+                    "待补 {categories}",
+                    categories=needed_categories,
+                )
+                status_bg = AMBER_SOFT
+                status_fg = AMBER
+            elif user.get("gaps"):
+                status_text = self.t("等待考核结果")
+                status_bg = ACCENT_SOFT
+                status_fg = ACCENT_DARK
+            else:
+                status_text = self.t("等待统计数据")
+                status_bg = "#EDF1F7"
+                status_fg = MUTED
             tk.Label(
                 top,
-                text=self.t("要求已齐") if met else (
-                    self.tf("待补 {categories}", categories=needed_categories)
-                    if user.get("needed_categories")
-                    else self.t("等待统计数据")
-                ),
-                bg=GREEN_SOFT if met else AMBER_SOFT,
-                fg=GREEN if met else AMBER,
+                text=status_text,
+                bg=status_bg,
+                fg=status_fg,
                 font=(FONT_UI, 7, "bold"),
                 padx=7,
                 pady=2,
@@ -2083,6 +2292,12 @@ class BoyaApp(tk.Tk):
                         autonomous=user.get("autonomous_selected_count", 0),
                         regular=user.get("regular_selected_count", 0),
                     )
+                    + "\n"
+                    + self.tf(
+                        "已通过 {passed} 门 · 待考核 {pending} 门",
+                        passed=user.get("passed_selected_count", 0),
+                        pending=user.get("pending_assessment_count", 0),
+                    )
                 ),
                 bg="#F8FAFD",
                 fg=FAINT,
@@ -2123,11 +2338,15 @@ class BoyaApp(tk.Tk):
         for user in users:
             view = snapshot_users.get(user.username, {})
             needed = " / ".join(
-                self.t(category)
-                for category in view.get("needed_categories", [])
+                f"{self.t(str(gap.get('category', '')))} ×{gap.get('remaining_to_select', 0)}"
+                for gap in view.get("gaps", [])
+                if int(gap.get("remaining_to_select", 0)) > 0
             )
             if not needed:
-                needed = self.t("等待统计数据") if user.enabled else "—"
+                if user.enabled and view.get("gaps"):
+                    needed = self.t("等待考核结果")
+                else:
+                    needed = self.t("等待统计数据") if user.enabled else "—"
             selected_count = int(view.get("selected_count", 0))
             manual_count = int(view.get("manual_selected_count", selected_count))
             machine_count = int(view.get("machine_selected_count", 0))
@@ -2176,7 +2395,9 @@ class BoyaApp(tk.Tk):
     def _refresh_log_text(self) -> None:
         if not hasattr(self, "log_text"):
             return
-        content = tail_text(self.store.path(LOG_FILE), 300)
+        content = tail_text(self.store.path(LOG_FILE), 300) or self.t(
+            "暂无运行日志。登录账号并开始自动运行后，这里会显示实时记录。"
+        )
         self.log_text.configure(state="normal")
         self.log_text.delete("1.0", "end")
         self.log_text.insert("1.0", content)

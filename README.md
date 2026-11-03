@@ -23,7 +23,9 @@ run unattended course selection, and keep the background runner alive after the 
 ## Highlights
 
 - **Gap-aware selection** — selects autonomous check-in courses only when they help satisfy an
-  unfinished category requirement.
+  category slot that is still unselected (`required - selected`).
+- **Campus-agnostic selection** — autonomous check-in courses from either Beijing or Hangzhou are
+  eligible; campus metadata does not block machine selection.
 - **Strict autonomous-only selection** — regular-signin courses are rejected both while building the
   plan and again immediately before a selection request is sent.
 - **Manual selections stay untouched** — existing courses are recorded as manual, never dropped or
@@ -36,6 +38,8 @@ run unattended course selection, and keep the background runner alive after the 
   remembered for the next launch.
 - **Visual status and logs** — inspect pending categories, selected courses, account progress, live
   activity, and the background PID without reading terminal output.
+- **Per-account status details** — see required, selected, passed, pending, failed, and remaining
+  selection counts, plus each course's attendance method, selection origin, result, and score.
 - **Safe defaults** — local credential storage, a dry-run mode, a pending-course limit, excluded
   categories, and an optional delay between polling cycles.
 - **Portable Windows build** — a single-file executable is published with each release.
@@ -46,8 +50,8 @@ run unattended course selection, and keep the background runner alive after the 
 | --- | --- |
 | ![Account management](docs/screenshots/accounts-en.png) | ![Settings](docs/screenshots/settings-en.png) |
 
-Selection provenance distinguishes pre-existing manual choices from automation-created choices,
-while also showing whether each course uses autonomous or regular check-in:
+The per-account status view distinguishes pre-existing manual choices from automation-created
+choices, and shows both category progress and each course's assessment state:
 
 ![Selection provenance](docs/screenshots/selection-origin-en.png)
 
@@ -55,7 +59,8 @@ while also showing whether each course uses autonomous or regular check-in:
 
 1. The desktop console stores credentials in Windows Credential Manager and completes SSO sign-in.
 2. The runner refreshes the shared course catalog plus each account's selected courses and statistics.
-3. It maps unfinished statistics to category gaps, then filters eligible autonomous check-in courses.
+3. It maps unfilled requirement slots (`required - selected`) to category gaps, then filters eligible
+   autonomous check-in courses across both campuses.
    Courses with regular sign-in or no location sign point never pass the machine-selection gate.
 4. At the configured time windows, it performs check-in or check-out for every selected autonomous
    course, regardless of whether the selection was manual or automated. Regular-signin courses are
@@ -133,7 +138,7 @@ The GUI writes `config.yaml` next to the executable. Passwords are never stored 
 | Key | Default | Purpose |
 | --- | --- | --- |
 | `username` | `null` | `null` processes all enabled accounts |
-| `campus` | `北京` | Default campus metadata |
+| `campus` | `北京` | Account metadata; no longer restricts autonomous machine selection |
 | `only_gap_categories` | `true` | Prefer courses that satisfy unfinished categories |
 | `prefer_categories` | moral / aesthetic / labor / health | Gap priority order |
 | `exclude_categories` | `其他方面` | Categories that are never selected automatically |

@@ -8,7 +8,8 @@ username: null
 # Beijing / Hangzhou / 北京 / 杭州
 campus: 北京
 
-# Only select courses that satisfy unfinished requirements / 只补未完成类别
+# Only select courses for unfilled requirement slots (required - selected).
+# 只选择仍有空余名额的类别（要求数 - 已选数）。
 only_gap_categories: true
 
 # Category priority order / 类别优先级

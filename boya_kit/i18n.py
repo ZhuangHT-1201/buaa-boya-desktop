@@ -35,6 +35,8 @@ ENGLISH = {
     "已启用账号": "Enabled accounts",
     "批量运行": "Batch runner",
     "待补类别": "Needed categories",
+    "待选课程": "Courses to select",
+    "统计空缺": "Open requirement slots",
     "按统计缺口": "From statistics",
     "已选课程": "Selected courses",
     "跟踪签到签退": "Track check-in / check-out",
@@ -63,7 +65,8 @@ ENGLISH = {
     "全部启用": "Enable all",
     "删除": "Delete",
     "启用 / 停用": "Enable / disable",
-    "查看已选": "View selected",
+    "查看已选": "View status",
+    "账号状态": "Account status",
     "选课来源": "Selection origin",
     "人工 / 机器": "Manual / Auto",
     "总数 · 机器/上限": "Total · Auto / Cap",
@@ -76,13 +79,40 @@ ENGLISH = {
     "人工选课 {manual} · 机器选课 {machine} · 自主签到 {autonomous} · 常规签到 {regular}": (
         "Manual {manual} · Automation {machine} · Autonomous {autonomous} · Regular {regular}"
     ),
-    "已选课程明细": "Selected Courses",
-    "账号 {username} 的已选课程": "Selected courses for {username}",
+    "已选课程明细": "Account Status",
+    "账号状态 · {username}": "Account status · {username}",
     "课程": "Course",
     "类别": "Category",
     "状态": "Status",
     "签到方式": "Attendance",
     "课程时间": "Course time",
+    "考核结果": "Assessment",
+    "成绩": "Score",
+    "考核通过": "Passed",
+    "已选": "Selected",
+    "未通过": "Not passed",
+    "待考核": "Pending assessment",
+    "待公布": "Result pending",
+    "当前有 {available} 门符合缺口的自主签到课程可选": (
+        "{available} eligible autonomous check-in course(s) are open now"
+    ),
+    "开放中的缺口课程已满额：{full} 门": (
+        "Open courses for required categories are full: {full}"
+    ),
+    "下一门符合缺口的自主签到课程开放时间：{time}": (
+        "Next eligible autonomous course opens: {time}"
+    ),
+    "当前没有符合缺口且开放的自主签到课程，后台会继续巡检。": (
+        "No open autonomous check-in course currently matches the remaining gaps. "
+        "The background runner will keep polling."
+    ),
+    "要求": "Required",
+    "已通过": "Passed",
+    "需选择": "To select",
+    "类别要求": "Category requirements",
+    "要求已完成": "All requirements completed",
+    "还需选 {count} 门": "{count} more course(s) to select",
+    "等待考核结果": "Waiting for assessment results",
     "自主签到": "Autonomous check-in",
     "常规签到": "Regular check-in",
     "待结束": "Pending",
@@ -204,11 +234,17 @@ ENGLISH = {
     "添加第一个账号": "Add your first account",
     "要求已齐": "Requirements met",
     "待补 {categories}": "Needed: {categories}",
+    "已通过 {passed} 门 · 待考核 {pending} 门": (
+        "Passed {passed} · Pending assessment {pending}"
+    ),
     "{campus}校区  ·  已选 {selected} 门  ·  校区有效数 {valid}": (
         "{campus} campus  ·  {selected} selected  ·  valid activities: {valid}"
     ),
     "未知": "unknown",
     "暂无动态": "No activity yet",
+    "暂无运行日志。登录账号并开始自动运行后，这里会显示实时记录。": (
+        "No logs yet. Sign in, start the background runner, and activity will appear here."
+    ),
     "先添加账号": "Add an account first",
     "还没有博雅账号。先添加账号并完成登录，再开始自动运行。": (
         "There are no Boya accounts yet. Add and sign in to an account first."

@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.2
+
+- Removed campus matching from machine course selection; autonomous check-in courses from either
+  campus are eligible.
+- Corrected category-gap detection to use unfilled requirement slots (`required - selected`) rather
+  than the `undoneAssessmentCount` field.
+- Prevented fallback selection when statistics are missing or no requirement slots remain.
+- Added per-account status details with category requirements, selected, passed, pending, failed, and
+  remaining-to-select counts.
+- Added assessment status and score to the selected-course list.
+
 ## 0.3.1
 
 - Fixed the gap-aware runner methods so the custom account filtering is actually used.

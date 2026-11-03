@@ -269,7 +269,7 @@ def set_autostart(enabled: bool) -> None:
 
 def tail_text(path: Path, lines: int = 120) -> str:
     if not path.exists():
-        return "暂无运行日志。登录账号并开始自动运行后，这里会显示实时记录。"
+        return ""
     try:
         data = path.read_text(encoding="utf-8", errors="replace")
     except OSError as exc:
