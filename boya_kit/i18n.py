@@ -23,6 +23,11 @@ ENGLISH = {
         "Sign in, start the runner, and let course selection and attendance run quietly."
     ),
     "同步数据": "Sync data",
+    "刷新博雅状态": "Refresh Boya status",
+    "数据更新时间：{time}": "Data updated: {time}",
+    "课程目录更新时间：{time}": "Course catalog updated: {time}",
+    "尚未同步": "Not synced yet",
+    "已通知后台刷新博雅状态": "Background status refresh requested",
     "让博雅任务安静地完成": "Let Boya tasks run quietly",
     "按账号分别识别缺口，自动选课并处理签到 / 签退。": (
         "Detect each account's category gaps, select courses, and handle check-in / check-out."
@@ -110,6 +115,11 @@ ENGLISH = {
     "已通过": "Passed",
     "需选择": "To select",
     "类别要求": "Category requirements",
+    "未来开放的自主签到课程": "Upcoming autonomous check-in courses",
+    "选课开放": "Selection window",
+    "课程开始": "Course starts",
+    "余量": "Seats left",
+    "暂无符合条件的未来课程": "No upcoming eligible courses",
     "要求已完成": "All requirements completed",
     "还需选 {count} 门": "{count} more course(s) to select",
     "等待考核结果": "Waiting for assessment results",
@@ -142,8 +152,8 @@ ENGLISH = {
         "How often to scan selection and attendance windows. 30–120 seconds is recommended."
     ),
     "全量刷新（秒）": "Full refresh (seconds)",
-    "重新获取课程、已选和统计的间隔，建议 1800–7200 秒。": (
-        "How often to reload courses, selections, and statistics. 1800–7200 seconds is recommended."
+    "重新获取课程、已选和统计的间隔，建议 300–1800 秒。": (
+        "How often to reload courses, selections, and statistics. 300–1800 seconds is recommended."
     ),
     "单账号最多已选": "Max selected per account",
     "机器已选且未结束的课程达到上限后暂停抢新课；人工选课不计入且不会被修改。": (
@@ -203,6 +213,10 @@ ENGLISH = {
     "显示": "Show",
     "北京": "Beijing",
     "杭州": "Hangzhou",
+    "学院路校区": "Xueyuan Road Campus",
+    "沙河校区": "Shahe Campus",
+    "全部校区": "All Campuses",
+    "杭州校区": "Hangzhou Campus",
     "德育": "Moral Education",
     "美育": "Aesthetic Education",
     "劳动教育": "Labor Education",

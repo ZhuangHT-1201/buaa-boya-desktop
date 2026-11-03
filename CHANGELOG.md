@@ -1,5 +1,16 @@
 # Changelog
 
+## 0.3.4
+
+- Lowered the default full refresh interval to five minutes so external course drops are detected
+  promptly.
+- Added automatic status refresh when opening the desktop app with stale cache data.
+- Added a manual **Refresh Boya status** action that delegates to the running background worker.
+- Added cache and course-catalog update timestamps.
+- Added an upcoming autonomous-course table with category, campus, selection window, course start,
+  and remaining capacity.
+- Added retry handling for transient Boya API timeouts.
+
 ## 0.3.3
 
 - Restricted automation-selected courses to Beijing, Shahe, and all-campus offerings.

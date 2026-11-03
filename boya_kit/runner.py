@@ -24,7 +24,14 @@ from autoboya.scheduler import (
 )
 from autoboya.storage import AutoBoyaStore
 
-from .config import LOG_FILE, RUN_PID_FILE, STOP_FILE, KitConfig, load_config
+from .config import (
+    LOG_FILE,
+    REFRESH_REQUEST_FILE,
+    RUN_PID_FILE,
+    STOP_FILE,
+    KitConfig,
+    load_config,
+)
 from .gaps import (
     gaps_payload,
     needed_categories,
@@ -66,6 +73,9 @@ class GapAwareRunner(AutomationRunner):
         stop = self.store.path(STOP_FILE)
         if stop.exists():
             stop.unlink()
+        refresh_request = self.store.path(REFRESH_REQUEST_FILE)
+        if refresh_request.exists():
+            refresh_request.unlink()
         last_refresh = 0.0
         try:
             from .config import DEFAULT_CONFIG_PATH
@@ -93,16 +103,41 @@ class GapAwareRunner(AutomationRunner):
                         self.refresh_once()
                         last_refresh = now
                         user_fingerprint = current_users
+                        refresh_request.unlink(missing_ok=True)
                         log_event(logger, logging.INFO, "account list changed; caches refreshed")
-                    if now - last_refresh >= self.kit.refresh_seconds:
+                    requested_refresh = refresh_request.exists()
+                    if requested_refresh:
+                        try:
+                            self.refresh_once()
+                            last_refresh = now
+                            log_event(
+                                logger,
+                                logging.INFO,
+                                "manual cache refresh completed",
+                            )
+                        except Exception as exc:
+                            log_event(
+                                logger,
+                                logging.ERROR,
+                                "manual cache refresh failed",
+                                error=exc,
+                            )
+                        finally:
+                            refresh_request.unlink(missing_ok=True)
+                    if not requested_refresh and now - last_refresh >= self.kit.refresh_seconds:
                         self.refresh_once()
                         last_refresh = now
+                        refresh_request.unlink(missing_ok=True)
                     decisions = self.scan_once()
                     self.log_heartbeat(decisions)
                     self.execute_decisions(decisions)
                 except Exception as exc:
                     log_event(logger, logging.ERROR, "boya_kit loop failed", error=exc)
-                _sleep_and_watch_stop(stop, max(5, self.kit.poll_seconds))
+                _sleep_and_watch_stop(
+                    stop,
+                    refresh_request,
+                    max(5, self.kit.poll_seconds),
+                )
         finally:
             pid = self.store.path(RUN_PID_FILE)
             if pid.exists():
@@ -127,6 +162,7 @@ class GapAwareRunner(AutomationRunner):
         config, courses = self._with_reauth(
             pool_user.username,
             lambda client: (client.get_all_config(), client.query_courses()),
+            retry_attempts=3,
         )
         self.cache.save_courses(courses)
         start, end = current_semester_window(config)
@@ -134,6 +170,7 @@ class GapAwareRunner(AutomationRunner):
             selected, statistics = self._with_reauth(
                 user.username,
                 lambda client: (client.query_chosen_courses(start, end), client.query_statistics()),
+                retry_attempts=3,
             )
             self.cache.save_selected(user.username, selected)
             self.cache.save_statistics(user.username, statistics)
@@ -321,6 +358,23 @@ class GapAwareRunner(AutomationRunner):
         self.store.save_json(ACTION_JOURNAL_FILE, journal)
         return results
 
+    def _with_reauth(self, username: str, operation, retry_attempts: int = 1):
+        for attempt in range(1, retry_attempts + 1):
+            try:
+                return super()._with_reauth(username, operation)
+            except Exception as exc:
+                if attempt >= retry_attempts:
+                    raise
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "BoyA request failed; retrying",
+                    user=mask_username(username),
+                    attempt=attempt,
+                    error=exc,
+                )
+                time.sleep(attempt * 2)
+
 
 def _attach_kit_file_logger(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -359,10 +413,18 @@ def _is_pending(course: BoyaCourse, now: datetime) -> bool:
     return end >= now
 
 
-def _sleep_and_watch_stop(stop: Path, seconds: int) -> None:
+def _sleep_and_watch_stop(
+    stop: Path,
+    refresh_request: Path,
+    seconds: int,
+) -> None:
     """Keep the worker responsive to the GUI stop request."""
     deadline = time.monotonic() + seconds
-    while not stop.exists() and time.monotonic() < deadline:
+    while (
+        not stop.exists()
+        and not refresh_request.exists()
+        and time.monotonic() < deadline
+    ):
         time.sleep(min(1.0, max(0.05, deadline - time.monotonic())))
 
 
@@ -470,7 +532,22 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
                 "selected": selected_rows,
             }
         )
-    return {"users": out_users, "dry_run": kit.dry_run, "only_gap_categories": kit.only_gap_categories}
+    def modified_at(relative: str) -> str | None:
+        path = store.path(relative)
+        try:
+            return datetime.fromtimestamp(path.stat().st_mtime).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        except OSError:
+            return None
+
+    return {
+        "users": out_users,
+        "dry_run": kit.dry_run,
+        "only_gap_categories": kit.only_gap_categories,
+        "status_updated_at": modified_at("cache/statistics.json"),
+        "courses_updated_at": modified_at("cache/courses.json"),
+    }
 
 
 def _course_assessment_status(
@@ -520,7 +597,7 @@ def _candidate_diagnostics(
         for course in open_courses
         if course not in full_open
     ]
-    future = []
+    future: list[tuple[datetime, BoyaCourse]] = []
     for course in relevant:
         starts = parse_dt(course.select_start)
         if starts is None or starts <= now:
@@ -530,6 +607,30 @@ def _candidate_diagnostics(
                 continue
         future.append((starts, course))
     next_open = min(future, key=lambda item: item[0])[0] if future else None
+    upcoming = []
+    for starts, course in sorted(future, key=lambda item: item[0])[:10]:
+        campus = (
+            " / ".join(str(value) for value in course.campus)
+            if isinstance(course.campus, list)
+            else str(course.campus or "")
+        )
+        remaining = (
+            max(0, course.max_count - course.current_count)
+            if course.current_count is not None and course.max_count is not None
+            else None
+        )
+        upcoming.append(
+            {
+                "id": course.id,
+                "name": course.name,
+                "category": course.category,
+                "campus": campus,
+                "select_start": course.select_start,
+                "select_end": course.select_end,
+                "course_start": course.course_start,
+                "remaining": remaining,
+            }
+        )
     return {
         "open_needed_candidate_count": len(available),
         "full_needed_candidate_count": len(full_open),
@@ -538,4 +639,5 @@ def _candidate_diagnostics(
             if next_open
             else None
         ),
+        "upcoming_candidates": upcoming,
     }

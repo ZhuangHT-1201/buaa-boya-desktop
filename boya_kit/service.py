@@ -18,7 +18,7 @@ from autoboya.storage import (
     try_store_keyring_password,
 )
 
-from .config import PROJECT_ROOT, RUN_PID_FILE, STOP_FILE
+from .config import PROJECT_ROOT, REFRESH_REQUEST_FILE, RUN_PID_FILE, STOP_FILE
 
 
 def mask_username(username: str) -> str:
@@ -125,6 +125,13 @@ def start_worker(store: AutoBoyaStore, log_path: Path) -> int:
 def request_worker_stop(store: AutoBoyaStore) -> None:
     store.init()
     store.path(STOP_FILE).write_text(
+        time.strftime("%Y-%m-%dT%H:%M:%S"), encoding="utf-8"
+    )
+
+
+def request_worker_refresh(store: AutoBoyaStore) -> None:
+    store.init()
+    store.path(REFRESH_REQUEST_FILE).write_text(
         time.strftime("%Y-%m-%dT%H:%M:%S"), encoding="utf-8"
     )
 

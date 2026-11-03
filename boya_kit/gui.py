@@ -5,6 +5,7 @@ import os
 import queue
 import sys
 import threading
+import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -30,6 +31,7 @@ from .service import (
     login_account,
     password_for_account,
     request_worker_stop,
+    request_worker_refresh,
     save_account_password,
     session_exists,
     set_account_enabled,
@@ -453,7 +455,7 @@ class AccountStatusDialog(tk.Toplevel):
         self.grab_set()
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 
-        width, height = px(1180), px(760)
+        width, height = px(1180), px(870)
         app.update_idletasks()
         x = app.winfo_rootx() + (app.winfo_width() - width) // 2
         y = app.winfo_rooty() + (app.winfo_height() - height) // 2
@@ -552,6 +554,26 @@ class AccountStatusDialog(tk.Toplevel):
             wraplength=px(1000),
             justify="left",
         ).pack(fill="x", pady=(px(5), 0))
+        updated_at = app.snapshot.get("status_updated_at")
+        courses_updated_at = app.snapshot.get("courses_updated_at")
+        tk.Label(
+            header,
+            text=(
+                app.tf(
+                    "数据更新时间：{time}",
+                    time=updated_at or app.t("尚未同步"),
+                )
+                + "  ·  "
+                + app.tf(
+                    "课程目录更新时间：{time}",
+                    time=courses_updated_at or app.t("尚未同步"),
+                )
+            ),
+            bg=BG,
+            fg=FAINT,
+            font=(FONT_UI, 7),
+            anchor="w",
+        ).pack(fill="x", pady=(px(4), 0))
 
         summary = tk.Frame(self, bg=BG)
         summary.pack(fill="x", padx=px(22), pady=(0, px(10)))
@@ -650,6 +672,95 @@ class AccountStatusDialog(tk.Toplevel):
                 ),
             )
 
+        upcoming = user.get("upcoming_candidates", [])
+        upcoming_card = Card(self, padx=px(8), pady=px(8))
+        upcoming_card.pack(
+            fill="x",
+            padx=px(22),
+            pady=(0, px(8)),
+        )
+        tk.Label(
+            upcoming_card,
+            text=app.t("未来开放的自主签到课程"),
+            bg=CARD,
+            fg=INK,
+            font=(FONT_UI, 9, "bold"),
+            anchor="w",
+        ).pack(fill="x", padx=px(5), pady=(0, px(4)))
+        upcoming_columns = (
+            "course",
+            "category",
+            "campus",
+            "window",
+            "course_start",
+            "remaining",
+        )
+        upcoming_tree = ttk.Treeview(
+            upcoming_card,
+            columns=upcoming_columns,
+            show="headings",
+            height=3,
+        )
+        upcoming_headings = {
+            "course": "课程",
+            "category": "类别",
+            "campus": "校区",
+            "window": "选课开放",
+            "course_start": "课程开始",
+            "remaining": "余量",
+        }
+        for column in upcoming_columns:
+            upcoming_tree.heading(
+                column,
+                text=app.t(upcoming_headings[column]),
+            )
+            upcoming_tree.column(
+                column,
+                width=px(
+                    290
+                    if column == "course"
+                    else 125
+                    if column in {"category", "campus", "remaining"}
+                    else 190
+                ),
+                anchor="center" if column != "course" else "w",
+            )
+        upcoming_tree.pack(fill="x")
+        if not upcoming:
+            upcoming_tree.insert(
+                "",
+                "end",
+                values=(app.t("暂无符合条件的未来课程"),) + ("",) * 5,
+            )
+        else:
+            def short_time(value: str | None) -> str:
+                if not value:
+                    return "—"
+                return value[5:16] if len(value) >= 16 else value
+
+            for course in upcoming:
+                remaining = course.get("remaining")
+                upcoming_tree.insert(
+                    "",
+                    "end",
+                    values=(
+                        course.get("name", ""),
+                        app.t(str(course.get("category", ""))),
+                        " / ".join(
+                            app.t(part.strip())
+                            for part in str(course.get("campus", "")).split("/")
+                            if part.strip()
+                        )
+                        or "—",
+                        (
+                            f"{short_time(course.get('select_start'))} → "
+                            f"{short_time(course.get('select_end'))}"
+                        ),
+                        short_time(course.get("course_start")),
+                        remaining if remaining is not None else "—",
+                    ),
+                )
+
         card = Card(self, padx=px(8), pady=px(8))
         card.pack(fill="both", expand=True, padx=px(22), pady=(0, px(10)))
         columns = (
@@ -738,6 +849,14 @@ class AccountStatusDialog(tk.Toplevel):
         footer.pack(fill="x", pady=(0, px(14)))
         FlatButton(
             footer,
+            app.t("刷新博雅状态"),
+            self._refresh_and_close,
+            bg=ACCENT,
+            padx=px(16),
+            pady=px(8),
+        ).pack(side="left")
+        FlatButton(
+            footer,
             app.t("关闭"),
             self.destroy,
             bg="#E8EDF6",
@@ -746,6 +865,10 @@ class AccountStatusDialog(tk.Toplevel):
             padx=px(18),
             pady=px(8),
         ).pack(side="right")
+
+    def _refresh_and_close(self) -> None:
+        self.app._manual_refresh()
+        self.destroy()
 
 
 class BoyaApp(tk.Tk):
@@ -784,6 +907,7 @@ class BoyaApp(tk.Tk):
         self.protocol("WM_DELETE_WINDOW", self._on_close)
         self.after(80, self._drain_events)
         self.after(250, self._refresh_visuals, True)
+        self.after(1200, self._auto_refresh_if_stale)
         self.after(2200, self._periodic_refresh)
 
     def _configure_window(self) -> None:
@@ -871,6 +995,7 @@ class BoyaApp(tk.Tk):
     def _build_shell(self) -> None:
         self.shell = tk.Frame(self, bg=BG)
         self.shell.pack(fill="both", expand=True)
+        self.cache_update_labels: list[tk.Label] = []
         self._build_sidebar(self.shell)
         self.content = tk.Frame(self.shell, bg=BG, padx=px(26), pady=px(20))
         self.content.pack(side="left", fill="both", expand=True)
@@ -1054,6 +1179,7 @@ class BoyaApp(tk.Tk):
             self.t("总览"),
             self.t("登录账号、开始任务，然后让后台安静地处理博雅选课与签到。"),
         )
+        self._add_cache_update_label(actions)
         FlatButton(
             actions,
             self.t("同步数据"),
@@ -1253,6 +1379,17 @@ class BoyaApp(tk.Tk):
             self.t("账号管理"),
             self.t("每个启用账号独立登录、独立统计、独立执行，适合多个账号批量运行。"),
         )
+        self._add_cache_update_label(actions)
+        FlatButton(
+            actions,
+            self.t("刷新博雅状态"),
+            self._manual_refresh,
+            bg="#E8EDF6",
+            fg=INK,
+            hover="#DDE4EF",
+            padx=16,
+            pady=8,
+        ).pack(side="right", padx=(8, 0))
         FlatButton(
             actions,
             self.t("添加账号"),
@@ -1481,7 +1618,7 @@ class BoyaApp(tk.Tk):
         self._settings_row(
             form_card,
             "全量刷新（秒）",
-            "重新获取课程、已选和统计的间隔，建议 1800–7200 秒。",
+            "重新获取课程、已选和统计的间隔，建议 300–1800 秒。",
             self.setting_vars["refresh_seconds"],
         )
         self._settings_row(
@@ -1787,6 +1924,17 @@ class BoyaApp(tk.Tk):
     def _open_account_dialog(self) -> None:
         AccountDialog(self, self._add_account)
 
+    def _add_cache_update_label(self, parent: tk.Widget) -> None:
+        label = tk.Label(
+            parent,
+            text="",
+            bg=BG,
+            fg=FAINT,
+            font=(FONT_UI, 7),
+        )
+        label.pack(side="right", padx=(0, px(10)))
+        self.cache_update_labels.append(label)
+
     def _add_account(
         self,
         username: str,
@@ -1950,10 +2098,8 @@ class BoyaApp(tk.Tk):
 
     def _manual_refresh(self) -> None:
         if self.worker.get("running"):
-            self.show_toast(
-                self.t("后台运行中会自动刷新；如需手动同步请先停止后台"),
-                "info",
-            )
+            request_worker_refresh(self.store)
+            self.show_toast(self.t("已通知后台刷新博雅状态"), "info")
             return
         if "refresh" in self._busy:
             return
@@ -1973,6 +2119,17 @@ class BoyaApp(tk.Tk):
                 self._busy.discard("refresh")
 
         self._run_thread(work)
+
+    def _auto_refresh_if_stale(self) -> None:
+        if os.environ.get("BOYA_KIT_DISABLE_AUTO_REFRESH") == "1":
+            return
+        stats_path = self.store.path("cache/statistics.json")
+        try:
+            age_seconds = time.time() - stats_path.stat().st_mtime
+        except OSError:
+            age_seconds = float("inf")
+        if age_seconds >= 120:
+            self._manual_refresh()
 
     def _load_settings_form(self) -> None:
         self.setting_vars["poll_seconds"].set(str(self.kit.poll_seconds))
@@ -2122,6 +2279,7 @@ class BoyaApp(tk.Tk):
                 self.snapshot = payload
                 self._snapshot_key = key
                 self._render_dashboard()
+                self._update_cache_labels()
         except Exception:
             pass
         if force:
@@ -2129,6 +2287,15 @@ class BoyaApp(tk.Tk):
         self._refresh_activity()
         if self.pages.get("logs") and self.pages["logs"].winfo_viewable():
             self._refresh_log_text()
+
+    def _update_cache_labels(self) -> None:
+        updated_at = self.snapshot.get("status_updated_at")
+        text = self.tf(
+            "数据更新时间：{time}",
+            time=updated_at or self.t("尚未同步"),
+        )
+        for label in self.cache_update_labels:
+            label.configure(text=text)
 
     def _update_worker_status(self) -> None:
         running = bool(self.worker.get("running"))

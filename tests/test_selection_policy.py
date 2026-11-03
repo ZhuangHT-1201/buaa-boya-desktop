@@ -7,6 +7,7 @@ from autoboya.storage import AutoBoyaStore
 from boya_kit.config import KitConfig
 from boya_kit.runner import (
     GapAwareRunner,
+    _candidate_diagnostics,
     _course_assessment_status,
     is_machine_selectable_course,
 )
@@ -260,3 +261,30 @@ def test_course_assessment_status_mapping() -> None:
     assert _course_assessment_status({"pass": 0}, failed, now) == "not_passed"
     assert _course_assessment_status({"pass": 0}, pending, now) == "pending"
     assert _course_assessment_status({"pass": None}, failed, now) == "pending_result"
+
+
+def test_upcoming_candidates_include_beijing_and_exclude_hangzhou() -> None:
+    now = datetime.now()
+    beijing = make_course(60, autonomous=True, category="劳动教育")
+    beijing.campus = ["学院路校区"]
+    beijing.select_start = (now + timedelta(hours=2)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    beijing.select_end = (now + timedelta(hours=4)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+    hangzhou = make_course(61, autonomous=True, category="劳动教育")
+    hangzhou.campus = ["杭州校区"]
+    hangzhou.select_start = (now + timedelta(hours=1)).strftime(
+        "%Y-%m-%d %H:%M:%S"
+    )
+
+    result = _candidate_diagnostics(
+        [hangzhou, beijing],
+        set(),
+        ["劳动教育"],
+        now,
+    )
+
+    assert result["next_needed_candidate_at"] is not None
+    assert [item["id"] for item in result["upcoming_candidates"]] == [60]

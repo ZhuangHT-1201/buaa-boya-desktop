@@ -19,6 +19,7 @@ EXAMPLE_CONFIG_PATH = SOURCE_ROOT / "config.example.yaml"
 
 RUN_PID_FILE = "run/boya_kit.pid"
 STOP_FILE = "run/boya_kit.stop"
+REFRESH_REQUEST_FILE = "run/boya_kit.refresh"
 LOG_FILE = "logs/boya_kit.log"
 
 DEFAULT_CONFIG_TEXT = """\
@@ -35,7 +36,7 @@ exclude_categories:
   - 其他方面
 max_pending_selected: 4
 poll_seconds: 60
-refresh_seconds: 3600
+refresh_seconds: 300
 dry_run: false
 """
 
@@ -49,7 +50,7 @@ class KitConfig:
     exclude_categories: list[str] = field(default_factory=lambda: ["其他方面"])
     max_pending_selected: int = 4
     poll_seconds: int = 60
-    refresh_seconds: int = 3600
+    refresh_seconds: int = 300
     dry_run: bool = False
 
     @classmethod

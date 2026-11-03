@@ -40,6 +40,10 @@ run unattended course selection, and keep the background runner alive after the 
   activity, and the background PID without reading terminal output.
 - **Per-account status details** — see required, selected, passed, pending, failed, and remaining
   selection counts, plus each course's attendance method, selection origin, result, and score.
+- **Live Boya status refresh** — request a fresh online status check from the UI, with visible cache
+  and catalog update timestamps.
+- **Upcoming course discovery** — lists future eligible autonomous check-in courses with campus,
+  selection window, course start time, and remaining capacity.
 - **Safe defaults** — local credential storage, a dry-run mode, a pending-course limit, excluded
   categories, and an optional delay between polling cycles.
 - **Portable Windows build** — a single-file executable is published with each release.
@@ -65,6 +69,8 @@ choices, and shows both category progress and each course's assessment state:
 4. At the configured time windows, it performs check-in or check-out for every selected autonomous
    course, regardless of whether the selection was manual or automated. Regular-signin courses are
    ignored.
+5. The course catalog and account statistics refresh every five minutes by default. The same scan
+   also builds a visible queue of future autonomous-course opportunities.
 
 The console and worker are separate processes. Use **Stop background** in the app when you want to
 end automation; closing the window only closes the console.
@@ -144,7 +150,7 @@ The GUI writes `config.yaml` next to the executable. Passwords are never stored 
 | `exclude_categories` | `其他方面` | Categories that are never selected automatically |
 | `max_pending_selected` | `4` | Cap for pending automation-selected courses; manual selections are not counted or changed |
 | `poll_seconds` | `60` | Selection and attendance scan interval |
-| `refresh_seconds` | `3600` | Full course and statistics refresh interval |
+| `refresh_seconds` | `300` | Full course, selection, and statistics refresh interval |
 | `dry_run` | `false` | Log decisions without making real requests |
 
 Use dry-run mode for the first refresh, verify the eligibility rules, and only then enable real
