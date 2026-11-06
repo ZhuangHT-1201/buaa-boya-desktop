@@ -138,6 +138,13 @@ ENGLISH = {
     "停用": "Disabled",
     "已登录": "Signed in",
     "需重新登录": "Sign in required",
+    "需验证码登录": "Captcha required",
+    "登录异常": "Sign-in error",
+    "需要重新登录": "Sign-in required",
+    "账号登录已失效，当前显示的是上次缓存。请点击“重新登录”并完成验证码。": (
+        "The account session has expired and cached data is shown. "
+        "Choose “Sign in again” and complete the captcha."
+    ),
     "等待统计数据": "Waiting for statistics",
     "添加账号后可进行批量操作": "Add an account to use batch actions",
     "共 {count} 个账号": "{count} account(s)",
@@ -236,6 +243,7 @@ ENGLISH = {
     ),
     "验证码图片：{path}": "Captcha image: {path}",
     "继续登录": "Continue sign-in",
+    "换一张": "New code",
     # Dynamic status and operations
     "正在停止": "Stopping",
     "正在安全结束当前循环": "Safely finishing the current cycle",

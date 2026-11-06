@@ -27,6 +27,7 @@ from .config import (
 from .i18n import format_text, translate
 from .runner import GapAwareRunner, status_payload
 from .service import (
+    CAPTCHA_REFRESH_SENTINEL,
     autostart_enabled,
     login_account,
     password_for_account,
@@ -421,6 +422,14 @@ class CaptchaDialog(tk.Toplevel):
         row.pack(fill="x", pady=(16, 0))
         FlatButton(
             row,
+            self.app.t("换一张"),
+            self._refresh,
+            bg="#EDF1F7",
+            fg=INK,
+            hover="#E0E6F0",
+        ).pack(side="left")
+        FlatButton(
+            row,
             self.app.t("取消"),
             self._cancel,
             bg="#EDF1F7",
@@ -441,6 +450,10 @@ class CaptchaDialog(tk.Toplevel):
 
     def _cancel(self) -> None:
         self.answer = ""
+        self.destroy()
+
+    def _refresh(self) -> None:
+        self.answer = CAPTCHA_REFRESH_SENTINEL
         self.destroy()
 
 
@@ -574,6 +587,19 @@ class AccountStatusDialog(tk.Toplevel):
             font=(FONT_UI, 7),
             anchor="w",
         ).pack(fill="x", pady=(px(4), 0))
+        if user.get("auth_status") == "auth_required":
+            tk.Label(
+                header,
+                text=app.t(
+                    "账号登录已失效，当前显示的是上次缓存。请点击“重新登录”并完成验证码。"
+                ),
+                bg=RED_SOFT,
+                fg=RED,
+                font=(FONT_UI, 8, "bold"),
+                anchor="w",
+                padx=px(8),
+                pady=px(5),
+            ).pack(fill="x", pady=(px(5), 0))
 
         summary = tk.Frame(self, bg=BG)
         summary.pack(fill="x", padx=px(22), pady=(0, px(10)))
@@ -897,6 +923,7 @@ class BoyaApp(tk.Tk):
         self._snapshot_key = ""
         self._closed = False
         self._busy: set[str] = set()
+        self._auth_prompted: set[str] = set()
         self._toast_after: str | None = None
         self.current_page = "dashboard"
 
@@ -1496,6 +1523,7 @@ class BoyaApp(tk.Tk):
         )
         scroll.pack(side="right", fill="y", pady=8, padx=(0, 6))
         self.account_tree.tag_configure("disabled", foreground="#9AA4B5")
+        self.account_tree.tag_configure("auth_required", foreground=RED)
         self.account_tree.bind("<Double-1>", lambda _event: self._login_selected())
 
         toolbar = tk.Frame(page, bg=BG)
@@ -2280,6 +2308,8 @@ class BoyaApp(tk.Tk):
                 self._snapshot_key = key
                 self._render_dashboard()
                 self._update_cache_labels()
+                if force:
+                    self.after(150, self._prompt_auth_issues)
         except Exception:
             pass
         if force:
@@ -2296,6 +2326,36 @@ class BoyaApp(tk.Tk):
         )
         for label in self.cache_update_labels:
             label.configure(text=text)
+
+    def _prompt_auth_issues(self) -> None:
+        blocked = [
+            user
+            for user in self.snapshot.get("users", [])
+            if user.get("auth_status") == "auth_required"
+        ]
+        active = {str(user.get("username", "")) for user in blocked}
+        self._auth_prompted.intersection_update(active)
+        new_accounts = [
+            str(user.get("username", ""))
+            for user in blocked
+            if str(user.get("username", "")) not in self._auth_prompted
+        ]
+        if not new_accounts:
+            return
+        self._auth_prompted.update(new_accounts)
+        self._show_page("accounts")
+        if self.account_tree.exists(new_accounts[0]):
+            self.account_tree.selection_set(new_accounts[0])
+            self.account_tree.focus(new_accounts[0])
+        messagebox.showwarning(
+            self.t("需要重新登录"),
+            self.t(
+                "账号登录已失效，当前显示的是上次缓存。请点击“重新登录”并完成验证码。"
+            )
+            + "\n\n"
+            + "\n".join(new_accounts),
+            parent=self,
+        )
 
     def _update_worker_status(self) -> None:
         running = bool(self.worker.get("running"))
@@ -2515,6 +2575,7 @@ class BoyaApp(tk.Tk):
                 else:
                     needed = self.t("等待统计数据") if user.enabled else "—"
             selected_count = int(view.get("selected_count", 0))
+            auth_status = view.get("auth_status")
             manual_count = int(view.get("manual_selected_count", selected_count))
             machine_count = int(view.get("machine_selected_count", 0))
             machine_pending = int(view.get("machine_pending_count", 0))
@@ -2527,7 +2588,11 @@ class BoyaApp(tk.Tk):
                     self.t("启用" if user.enabled else "停用"),
                     self.t(user.campus),
                     self.t(
-                        "已登录"
+                        "需验证码登录"
+                        if auth_status == "auth_required"
+                        else "登录异常"
+                        if auth_status == "error"
+                        else "已登录"
                         if session_exists(self.store, user.username)
                         else "需重新登录"
                     ),
@@ -2535,7 +2600,13 @@ class BoyaApp(tk.Tk):
                     needed,
                     f"{selected_count} · {machine_pending}/{self.kit.max_pending_selected}",
                 ),
-                tags=() if user.enabled else ("disabled",),
+                tags=(
+                    ("auth_required",)
+                    if auth_status == "auth_required"
+                    else ()
+                    if user.enabled
+                    else ("disabled",)
+                ),
             )
         if selected and self.account_tree.exists(selected):
             self.account_tree.selection_set(selected)

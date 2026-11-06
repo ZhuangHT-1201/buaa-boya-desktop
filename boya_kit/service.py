@@ -18,7 +18,10 @@ from autoboya.storage import (
     try_store_keyring_password,
 )
 
+from .account_health import mark_auth_error, mark_auth_ok, mark_auth_required
 from .config import PROJECT_ROOT, REFRESH_REQUEST_FILE, RUN_PID_FILE, STOP_FILE
+
+CAPTCHA_REFRESH_SENTINEL = "__CAPTCHA_REFRESH__"
 
 
 def mask_username(username: str) -> str:
@@ -184,26 +187,79 @@ def login_account(
     password: str,
     captcha_provider: Callable[[object], str] | None = None,
 ) -> object:
-    client = AuthClient(store)
-    captcha: str | None = None
-    try:
+    last_error: Exception | None = None
+    cleanup_captcha_files(store)
+    for attempt in range(1, 4):
+        client = AuthClient(store)
+        captcha: str | None = None
         try:
-            client.preflight_login()
-        except CaptchaRequired as exc:
-            if not captcha_provider:
-                raise RuntimeError("登录需要验证码，请在图形界面中重试") from exc
-            captcha = captcha_provider(exc.challenge).strip()
-            if not captcha:
-                raise RuntimeError("未填写验证码，登录已取消") from exc
-        session = client.login(username, password, captcha=captcha)
-    except LoginError as exc:
-        raise RuntimeError(str(exc) or "统一身份认证登录失败") from exc
-    store.save_json(
-        f"sessions/{username}.json",
-        {"bykc_token": session.bykc_token, "cookies": session.cookies},
-        mode=0o600,
-    )
-    return session
+            try:
+                client.preflight_login()
+            except CaptchaRequired as exc:
+                if not _valid_captcha_image(exc.challenge.image_path):
+                    last_error = exc
+                    if attempt < 3:
+                        time.sleep(1)
+                        continue
+                    mark_auth_required(
+                        store,
+                        username,
+                        "验证码图片加载失败，请重新登录",
+                        exc.challenge.image_path,
+                    )
+                    raise RuntimeError("验证码图片加载失败，请重新登录") from exc
+                if not captcha_provider:
+                    raise RuntimeError("登录需要验证码，请在图形界面中重试") from exc
+                captcha = captcha_provider(exc.challenge).strip()
+                if captcha == CAPTCHA_REFRESH_SENTINEL:
+                    continue
+                if not captcha:
+                    raise RuntimeError("未填写验证码，登录已取消") from exc
+            session = client.login(username, password, captcha=captcha)
+        except LoginError as exc:
+            last_error = exc
+            message = str(exc)
+            if attempt < 3 and (
+                "captcha" in message.lower() or "验证码" in message
+            ):
+                continue
+            mark_auth_required(store, username, message or "登录失败")
+            raise RuntimeError(message or "统一身份认证登录失败") from exc
+        store.save_json(
+            f"sessions/{username}.json",
+            {"bykc_token": session.bykc_token, "cookies": session.cookies},
+            mode=0o600,
+        )
+        mark_auth_ok(store, username, message="manual login")
+        cleanup_captcha_files(store)
+        return session
+    message = str(last_error or "登录失败")
+    mark_auth_error(store, username, message)
+    raise RuntimeError(message)
+
+
+def _valid_captcha_image(path: Path) -> bool:
+    try:
+        return path.exists() and path.stat().st_size > 200
+    except OSError:
+        return False
+
+
+def cleanup_captcha_files(store: AutoBoyaStore, keep: int = 40) -> None:
+    directory = store.path("captcha")
+    try:
+        files = sorted(
+            (path for path in directory.iterdir() if path.is_file()),
+            key=lambda path: path.stat().st_mtime,
+            reverse=True,
+        )
+    except OSError:
+        return
+    for path in files[keep:]:
+        try:
+            path.unlink()
+        except OSError:
+            pass
 
 
 def set_account_enabled(

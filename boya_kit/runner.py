@@ -7,6 +7,7 @@ from datetime import datetime
 from pathlib import Path
 
 from autoboya.cache import CourseCache
+from autoboya.exceptions import CaptchaRequired, LoginError
 from autoboya.logging import configure_logging, log_event, mask_username
 from autoboya.models import ActionResult, AutomationDecision, BoyaCourse, UserRecord
 from autoboya.rules import (
@@ -24,6 +25,14 @@ from autoboya.scheduler import (
 )
 from autoboya.storage import AutoBoyaStore
 
+from .account_health import (
+    STATUS_AUTH_REQUIRED,
+    account_health,
+    load_account_health,
+    mark_auth_error,
+    mark_auth_ok,
+    mark_auth_required,
+)
 from .config import (
     LOG_FILE,
     REFRESH_REQUEST_FILE,
@@ -39,6 +48,7 @@ from .gaps import (
     requirements_met,
     selection_requirements_met,
 )
+from .notify import notify_auth_required
 from .selections import (
     ORIGIN_MACHINE,
     ORIGIN_MANUAL,
@@ -47,8 +57,13 @@ from .selections import (
     origin_for,
     reconcile_selection_origins,
 )
+from .service import cleanup_captcha_files
 
 logger = logging.getLogger(__name__)
+
+
+class ReauthenticationRequired(RuntimeError):
+    """The account needs an interactive sign-in before network work can continue."""
 
 
 class GapAwareRunner(AutomationRunner):
@@ -66,6 +81,7 @@ class GapAwareRunner(AutomationRunner):
 
     def run_forever(self) -> None:
         self.store.init()
+        cleanup_captcha_files(self.store)
         configure_logging(self.store, console=False)
         _attach_kit_file_logger(self.store.path(LOG_FILE))
         self.store.path(RUN_PID_FILE).parent.mkdir(parents=True, exist_ok=True)
@@ -100,7 +116,15 @@ class GapAwareRunner(AutomationRunner):
                         pass
                     current_users = _user_fingerprint(self.store)
                     if current_users != user_fingerprint:
-                        self.refresh_once()
+                        try:
+                            self.refresh_once()
+                        except Exception as exc:
+                            log_event(
+                                logger,
+                                logging.ERROR,
+                                "cache refresh failed after account change",
+                                error=exc,
+                            )
                         last_refresh = now
                         user_fingerprint = current_users
                         refresh_request.unlink(missing_ok=True)
@@ -125,7 +149,15 @@ class GapAwareRunner(AutomationRunner):
                         finally:
                             refresh_request.unlink(missing_ok=True)
                     if not requested_refresh and now - last_refresh >= self.kit.refresh_seconds:
-                        self.refresh_once()
+                        try:
+                            self.refresh_once()
+                        except Exception as exc:
+                            log_event(
+                                logger,
+                                logging.ERROR,
+                                "periodic cache refresh failed",
+                                error=exc,
+                            )
                         last_refresh = now
                         refresh_request.unlink(missing_ok=True)
                     decisions = self.scan_once()
@@ -148,36 +180,89 @@ class GapAwareRunner(AutomationRunner):
         self.store.path(STOP_FILE).write_text(datetime.now().isoformat(), encoding="utf-8")
 
     def refresh_once(self) -> None:
-        # 复用父类逻辑，但仅针对启用/指定用户
         users = self.enabled_users()
         if not users:
             return
-        # 临时把 store 用户过滤交给父类：直接调用父类 refresh，再靠 execute 过滤
-        # 父类会刷新全部 enabled users；这里手动做限定版
         import random
 
-        from autoboya.scheduler import current_semester_window
-
-        pool_user = random.choice(users)
-        config, courses = self._with_reauth(
-            pool_user.username,
-            lambda client: (client.get_all_config(), client.query_courses()),
-            retry_attempts=3,
-        )
-        self.cache.save_courses(courses)
-        start, end = current_semester_window(config)
-        for user in users:
-            selected, statistics = self._with_reauth(
-                user.username,
-                lambda client: (client.query_chosen_courses(start, end), client.query_statistics()),
-                retry_attempts=3,
+        health = load_account_health(self.store)
+        pool_candidates = [
+            user
+            for user in users
+            if health.get(user.username, {}).get("status") != STATUS_AUTH_REQUIRED
+        ]
+        random.shuffle(pool_candidates)
+        courses_refreshed = False
+        for pool_user in pool_candidates:
+            try:
+                _config, courses = self._with_reauth(
+                    pool_user.username,
+                    lambda client: (client.get_all_config(), client.query_courses()),
+                    retry_attempts=3,
+                )
+            except ReauthenticationRequired:
+                continue
+            except Exception as exc:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "course pool refresh failed for account; trying another account",
+                    user=mask_username(pool_user.username),
+                    error=exc,
+                )
+                continue
+            self.cache.save_courses(courses)
+            courses_refreshed = True
+            break
+        if not courses_refreshed:
+            log_event(
+                logger,
+                logging.WARNING,
+                "course pool could not be refreshed; using cached catalog",
             )
+
+        for user in users:
+            if account_health(self.store, user.username).get("status") == STATUS_AUTH_REQUIRED:
+                continue
+            try:
+                selected, statistics = self._with_reauth(
+                    user.username,
+                    lambda client: self._query_user_status(client),
+                    retry_attempts=3,
+                )
+            except ReauthenticationRequired:
+                continue
+            except Exception as exc:
+                mark_auth_error(self.store, user.username, str(exc))
+                log_event(
+                    logger,
+                    logging.ERROR,
+                    "account cache refresh failed",
+                    user=mask_username(user.username),
+                    error=exc,
+                )
+                continue
             self.cache.save_selected(user.username, selected)
             self.cache.save_statistics(user.username, statistics)
         reconcile_selection_origins(
             self.store,
             self._selected_by_user(self.cache.load_selected()),
         )
+
+    def _query_user_status(self, client):
+        from autoboya.scheduler import current_semester_window
+
+        statistics = client.query_statistics()
+        info = statistics.get("semesterInfo") if isinstance(statistics, dict) else None
+        if isinstance(info, dict):
+            start = info.get("semesterStartDate")
+            end = info.get("semesterEndDate")
+        else:
+            start = end = None
+        if not start or not end:
+            start, end = current_semester_window(client.get_all_config())
+        selected = client.query_chosen_courses(start, end)
+        return selected, statistics
 
     def scan_once(self) -> list[AutomationDecision]:
         now = datetime.now()
@@ -190,6 +275,11 @@ class GapAwareRunner(AutomationRunner):
         decisions: list[AutomationDecision] = []
 
         for user in users:
+            if (
+                account_health(self.store, user.username).get("status")
+                == STATUS_AUTH_REQUIRED
+            ):
+                continue
             stats = stats_all.get(user.username, {}) if isinstance(stats_all, dict) else {}
             selected = selected_by_user.get(user.username, [])
             pending = [c for c in selected if _is_pending(c, now)]
@@ -359,11 +449,37 @@ class GapAwareRunner(AutomationRunner):
         return results
 
     def _with_reauth(self, username: str, operation, retry_attempts: int = 1):
+        current_health = account_health(self.store, username)
+        if current_health.get("status") == STATUS_AUTH_REQUIRED:
+            raise ReauthenticationRequired(
+                current_health.get("error") or "account requires interactive login"
+            )
         for attempt in range(1, retry_attempts + 1):
             try:
-                return super()._with_reauth(username, operation)
+                result = super()._with_reauth(username, operation)
+            except CaptchaRequired as exc:
+                detail = str(exc) or "CAPTCHA required"
+                capture_path = getattr(
+                    getattr(exc, "challenge", None),
+                    "image_path",
+                    None,
+                )
+                mark_auth_required(
+                    self.store,
+                    username,
+                    detail,
+                    capture_path,
+                )
+                notify_auth_required(username)
+                raise ReauthenticationRequired(detail) from exc
+            except LoginError as exc:
+                detail = str(exc) or "unified authentication login failed"
+                mark_auth_required(self.store, username, detail)
+                notify_auth_required(username)
+                raise ReauthenticationRequired(detail) from exc
             except Exception as exc:
                 if attempt >= retry_attempts:
+                    mark_auth_error(self.store, username, str(exc))
                     raise
                 log_event(
                     logger,
@@ -374,6 +490,9 @@ class GapAwareRunner(AutomationRunner):
                     error=exc,
                 )
                 time.sleep(attempt * 2)
+            else:
+                mark_auth_ok(self.store, username)
+                return result
 
 
 def _attach_kit_file_logger(path: Path) -> None:
@@ -448,6 +567,11 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
 
     out_users = []
     for user in users:
+        health = account_health(store, user.username)
+        session_path = store.path(f"sessions/{user.username}.json")
+        auth_status = health.get("status") or (
+            "logged_in" if session_path.exists() else "login_required"
+        )
         stats = stats_all.get(user.username, {}) if isinstance(stats_all, dict) else {}
         selected_items = selected_raw.get(user.username, []) if isinstance(selected_raw, dict) else []
         selected_pairs = (
@@ -491,6 +615,10 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
             {
                 "username": user.username,
                 "campus": user.campus,
+                "auth_status": auth_status,
+                "auth_error": health.get("error"),
+                "captcha_path": health.get("captcha_path"),
+                "last_auth_success_at": health.get("last_success_at"),
                 "requirements_met": requirements_met(stats, exclude=kit.exclude_categories),
                 "needed_categories": needed,
                 "gaps": gaps,

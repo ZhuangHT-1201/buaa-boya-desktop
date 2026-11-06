@@ -14,6 +14,7 @@ from rich.table import Table
 from autoboya.storage import AutoBoyaStore
 
 from . import __version__
+from .account_health import mark_auth_ok
 from .config import DEFAULT_CONFIG_PATH, LOG_FILE, ensure_config_file, load_config
 from .runner import GapAwareRunner, status_payload
 
@@ -64,6 +65,7 @@ def setup(
     login = subprocess.run([sys.executable, "-m", "autoboya", "login", user], check=False)
     if login.returncode != 0:
         raise typer.Exit(login.returncode)
+    mark_auth_ok(store, user, message="command-line login")
 
     # 保持批量模式：账号启用状态由 AutoBoya 账号列表管理，不在配置中绑定单账号。
     _patch_config_defaults(campus)

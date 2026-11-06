@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.4.0
+
+- Prevented one expired account from blocking refreshes and scans for other accounts.
+- Stopped repeated CAPTCHA-triggered login attempts and marked affected accounts as requiring
+  interactive sign-in.
+- Added a Windows notification and in-app warning when background reauthentication needs a CAPTCHA.
+- Added CAPTCHA image validation, automatic retry for invalid images and wrong codes, and a
+  **New code** button.
+- Added per-account authentication health state to the account table and status dialog.
+- Pruned stale CAPTCHA image files.
+- Continued scanning cached selections even when online refresh fails.
+
 ## 0.3.4
 
 - Lowered the default full refresh interval to five minutes so external course drops are detected

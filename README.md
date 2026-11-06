@@ -38,6 +38,8 @@ run unattended course selection, and keep the background runner alive after the 
   remembered for the next launch.
 - **Visual status and logs** — inspect pending categories, selected courses, account progress, live
   activity, and the background PID without reading terminal output.
+- **Session health monitoring** — automatic reauthentication uses the stored password when possible.
+  CAPTCHA-required accounts are paused, highlighted, and reported instead of blocking the batch.
 - **Per-account status details** — see required, selected, passed, pending, failed, and remaining
   selection counts, plus each course's attendance method, selection origin, result, and score.
 - **Live Boya status refresh** — request a fresh online status check from the UI, with visible cache
@@ -165,6 +167,9 @@ selections.
 - No account data is uploaded by this project.
 - Removing an account from the GUI does not automatically erase its Windows Credential Manager entry.
 - Do not attach passwords, cookies, session exports, or identifiable screenshots to public issues.
+
+BUAA SSO sessions can expire. If reauthentication requires a CAPTCHA, open **Accounts**, select the
+highlighted account, and choose **Sign in again**. Other valid accounts continue running meanwhile.
 
 Please report vulnerabilities through GitHub's private vulnerability reporting rather than a public
 issue. See [SECURITY.md](SECURITY.md).
