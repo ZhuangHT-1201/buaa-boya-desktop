@@ -40,6 +40,8 @@ run unattended course selection, and keep the background runner alive after the 
   activity, and the background PID without reading terminal output.
 - **Session health monitoring** — automatic reauthentication uses the stored password when possible.
   CAPTCHA-required accounts are paused, highlighted, and reported instead of blocking the batch.
+- **Dashboard recovery queue** — expired accounts are marked red on the overview, with one
+  **Sign in all** action that handles CAPTCHA-protected accounts sequentially.
 - **Per-account status details** — see required, selected, passed, pending, failed, and remaining
   selection counts, plus each course's attendance method, selection origin, result, and score.
 - **Live Boya status refresh** — request a fresh online status check from the UI, with visible cache

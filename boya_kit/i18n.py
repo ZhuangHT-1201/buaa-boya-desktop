@@ -141,6 +141,35 @@ ENGLISH = {
     "需验证码登录": "Captcha required",
     "登录异常": "Sign-in error",
     "需要重新登录": "Sign-in required",
+    "{count} 个账号需要重新登录": "{count} account(s) need to sign in again",
+    "{accounts} · 验证码会逐个弹出，完成一个后自动继续下一个": (
+        "{accounts} · captcha prompts appear one at a time and the next account continues automatically"
+    ),
+    "一键登录（{count}）": "Sign in all ({count})",
+    "正在登录 {current}/{total}…": "Signing in {current}/{total}…",
+    "当前没有需要重新登录的账号": "No accounts currently need to sign in again",
+    "有账号正在登录或刷新，请稍后再试": (
+        "An account is already signing in or refreshing. Try again shortly."
+    ),
+    "开始一键登录 {count} 个失效账号，验证码会逐个弹出": (
+        "Signing in {count} expired account(s); captcha prompts will appear one at a time"
+    ),
+    "正在逐个登录失效账号（{current}/{total}）…": (
+        "Signing in expired accounts one by one ({current}/{total})…"
+    ),
+    "正在登录 {current}/{total}：{username}": (
+        "Signing in {current}/{total}: {username}"
+    ),
+    "一键登录完成": "Bulk sign-in complete",
+    "成功登录 {success} 个账号，失败 {failed} 个。\n\n失败详情：\n{details}": (
+        "Signed in {success} account(s); {failed} failed.\n\nFailure details:\n{details}"
+    ),
+    "已重新登录全部 {count} 个失效账号": (
+        "All {count} expired account(s) signed in again"
+    ),
+    "{count} 个账号需要重新登录，请使用总览顶部的一键登录": (
+        "{count} account(s) need to sign in again. Use “Sign in all” on the Overview page."
+    ),
     "账号登录已失效，当前显示的是上次缓存。请点击“重新登录”并完成验证码。": (
         "The account session has expired and cached data is shown. "
         "Choose “Sign in again” and complete the captcha."

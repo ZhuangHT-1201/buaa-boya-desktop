@@ -71,6 +71,10 @@ def px(value: int | float) -> int:
     return max(1, int(round(value * UI_SCALE)))
 
 
+def account_requires_sign_in(user: dict) -> bool:
+    return user.get("auth_status") in {"auth_required", "login_required"}
+
+
 def _default_language() -> str:
     if os.name != "nt":
         return "en"
@@ -587,7 +591,7 @@ class AccountStatusDialog(tk.Toplevel):
             font=(FONT_UI, 7),
             anchor="w",
         ).pack(fill="x", pady=(px(4), 0))
-        if user.get("auth_status") == "auth_required":
+        if account_requires_sign_in(user):
             tk.Label(
                 header,
                 text=app.t(
@@ -924,6 +928,9 @@ class BoyaApp(tk.Tk):
         self._closed = False
         self._busy: set[str] = set()
         self._auth_prompted: set[str] = set()
+        self._batch_login_active = False
+        self._batch_login_current = 0
+        self._batch_login_total = 0
         self._toast_after: str | None = None
         self.current_page = "dashboard"
 
@@ -1290,6 +1297,9 @@ class BoyaApp(tk.Tk):
             font=(FONT_UI, 7),
             anchor="w",
         ).pack(fill="x", pady=(10, 0))
+
+        self.dashboard_auth_slot = tk.Frame(page, bg=BG)
+        self.dashboard_auth_slot.pack(fill="x")
 
         metrics = tk.Frame(page, bg=BG)
         metrics.pack(fill="x", pady=12)
@@ -2065,6 +2075,71 @@ class BoyaApp(tk.Tk):
 
         self._run_thread(work)
 
+    def _login_expired_accounts(self) -> None:
+        if self._batch_login_active:
+            self.show_toast(
+                self.tf(
+                    "正在逐个登录失效账号（{current}/{total}）…",
+                    current=self._batch_login_current,
+                    total=self._batch_login_total,
+                ),
+                "info",
+            )
+            return
+        usernames = [
+            str(user.get("username", ""))
+            for user in self.snapshot.get("users", [])
+            if account_requires_sign_in(user)
+            and str(user.get("username", "")).strip()
+        ]
+        if not usernames:
+            self.show_toast(self.t("当前没有需要重新登录的账号"), "info")
+            return
+        busy = [username for username in usernames if username in self._busy]
+        if busy:
+            self.show_toast(
+                self.t("有账号正在登录或刷新，请稍后再试"),
+                "info",
+            )
+            return
+
+        self._batch_login_active = True
+        self._batch_login_current = 0
+        self._batch_login_total = len(usernames)
+        self._busy.update(usernames)
+        self._render_dashboard()
+        self.show_toast(
+            self.tf(
+                "开始一键登录 {count} 个失效账号，验证码会逐个弹出",
+                count=len(usernames),
+            ),
+            "info",
+        )
+
+        def work() -> None:
+            results: list[tuple[str, bool, str]] = []
+            for index, username in enumerate(usernames, start=1):
+                self.events.put(
+                    ("batch_login_progress", (index, len(usernames), username))
+                )
+                try:
+                    password = password_for_account(self.store, username)
+                    login_account(
+                        self.store,
+                        username,
+                        password,
+                        captcha_provider=self._worker_captcha_provider,
+                    )
+                except Exception as exc:
+                    results.append((username, False, str(exc)))
+                else:
+                    results.append((username, True, ""))
+                finally:
+                    self._busy.discard(username)
+            self.events.put(("batch_login_done", results))
+
+        self._run_thread(work)
+
     def _toggle_selected(self) -> None:
         username = self._require_selected_username()
         if not username:
@@ -2225,7 +2300,7 @@ class BoyaApp(tk.Tk):
         holder: dict[str, str] = {}
         self.events.put(("captcha", (Path(challenge.image_path), event, holder)))
         if not event.wait(600):
-            raise RuntimeError(self.t("等待验证码超时"))
+            raise RuntimeError(translate("等待验证码超时", self.language))
         return holder.get("value", "")
 
     def _handle_captcha(self, payload: object) -> None:
@@ -2246,6 +2321,54 @@ class BoyaApp(tk.Tk):
                 kind, payload = self.events.get_nowait()
                 if kind == "captcha":
                     self._handle_captcha(payload)
+                elif kind == "batch_login_progress":
+                    current, total, username = payload
+                    self._batch_login_current = int(current)
+                    self._batch_login_total = int(total)
+                    self._render_dashboard()
+                    self.show_toast(
+                        self.tf(
+                            "正在登录 {current}/{total}：{username}",
+                            current=current,
+                            total=total,
+                            username=username,
+                        ),
+                        "info",
+                    )
+                elif kind == "batch_login_done":
+                    results = payload
+                    self._batch_login_active = False
+                    self._batch_login_current = 0
+                    self._batch_login_total = 0
+                    success = sum(1 for _username, ok, _error in results if ok)
+                    failed = [
+                        (username, error)
+                        for username, ok, error in results
+                        if not ok
+                    ]
+                    self._refresh_visuals(True)
+                    if failed:
+                        details = "\n".join(
+                            f"{username}: {error}" for username, error in failed
+                        )
+                        messagebox.showwarning(
+                            self.t("一键登录完成"),
+                            self.tf(
+                                "成功登录 {success} 个账号，失败 {failed} 个。\n\n失败详情：\n{details}",
+                                success=success,
+                                failed=len(failed),
+                                details=details,
+                            ),
+                            parent=self,
+                        )
+                    else:
+                        self.show_toast(
+                            self.tf(
+                                "已重新登录全部 {count} 个失效账号",
+                                count=success,
+                            ),
+                            "success",
+                        )
                 elif kind == "login_ok":
                     username, suffix = payload
                     self.show_toast(
@@ -2331,7 +2454,7 @@ class BoyaApp(tk.Tk):
         blocked = [
             user
             for user in self.snapshot.get("users", [])
-            if user.get("auth_status") == "auth_required"
+            if account_requires_sign_in(user)
         ]
         active = {str(user.get("username", "")) for user in blocked}
         self._auth_prompted.intersection_update(active)
@@ -2343,18 +2466,15 @@ class BoyaApp(tk.Tk):
         if not new_accounts:
             return
         self._auth_prompted.update(new_accounts)
-        self._show_page("accounts")
-        if self.account_tree.exists(new_accounts[0]):
+        if self.current_page == "accounts" and self.account_tree.exists(new_accounts[0]):
             self.account_tree.selection_set(new_accounts[0])
             self.account_tree.focus(new_accounts[0])
-        messagebox.showwarning(
-            self.t("需要重新登录"),
-            self.t(
-                "账号登录已失效，当前显示的是上次缓存。请点击“重新登录”并完成验证码。"
-            )
-            + "\n\n"
-            + "\n".join(new_accounts),
-            parent=self,
+        self.show_toast(
+            self.tf(
+                "{count} 个账号需要重新登录，请使用总览顶部的一键登录",
+                count=len(new_accounts),
+            ),
+            "error",
         )
 
     def _update_worker_status(self) -> None:
@@ -2396,6 +2516,80 @@ class BoyaApp(tk.Tk):
         self.metric_values["needed"].configure(text=str(to_select_count))
         self.metric_values["selected"].configure(text=str(selected_count))
 
+        for child in self.dashboard_auth_slot.winfo_children():
+            child.destroy()
+        blocked = [
+            user
+            for user in users
+            if account_requires_sign_in(user)
+        ]
+        if blocked:
+            usernames = [str(user.get("username", "")) for user in blocked]
+            alert = tk.Frame(
+                self.dashboard_auth_slot,
+                bg=RED_SOFT,
+                highlightbackground="#F3B8BE",
+                highlightthickness=1,
+                padx=16,
+                pady=11,
+            )
+            alert.pack(fill="x", pady=(12, 0))
+            icon = tk.Label(
+                alert,
+                text="!",
+                bg=RED,
+                fg="#FFFFFF",
+                font=(FONT_UI, 12, "bold"),
+                width=2,
+                pady=2,
+            )
+            icon.pack(side="left", padx=(0, 12))
+            alert_text = tk.Frame(alert, bg=RED_SOFT)
+            alert_text.pack(side="left", fill="both", expand=True)
+            tk.Label(
+                alert_text,
+                text=self.tf(
+                    "{count} 个账号需要重新登录",
+                    count=len(blocked),
+                ),
+                bg=RED_SOFT,
+                fg=RED,
+                font=(FONT_UI, 10, "bold"),
+                anchor="w",
+            ).pack(fill="x")
+            tk.Label(
+                alert_text,
+                text=self.tf(
+                    "{accounts} · 验证码会逐个弹出，完成一个后自动继续下一个",
+                    accounts=", ".join(usernames),
+                ),
+                bg=RED_SOFT,
+                fg="#9F3946",
+                font=(FONT_UI, 8),
+                anchor="w",
+                justify="left",
+                wraplength=px(780),
+            ).pack(fill="x", pady=(3, 0))
+            button_text = (
+                self.tf(
+                    "正在登录 {current}/{total}…",
+                    current=self._batch_login_current,
+                    total=self._batch_login_total,
+                )
+                if self._batch_login_active
+                else self.tf("一键登录（{count}）", count=len(blocked))
+            )
+            FlatButton(
+                alert,
+                button_text,
+                self._login_expired_accounts,
+                bg=RED,
+                hover="#B63D4B",
+                padx=16,
+                pady=8,
+                font_size=9,
+            ).pack(side="right", padx=(14, 0))
+
         for child in self.dashboard_accounts.inner.winfo_children():
             child.destroy()
         if not users:
@@ -2426,20 +2620,24 @@ class BoyaApp(tk.Tk):
             return
 
         for user in users:
+            auth_required = account_requires_sign_in(user)
+            item_bg = RED_SOFT if auth_required else "#F8FAFD"
             item = tk.Frame(
                 self.dashboard_accounts.inner,
-                bg="#F8FAFD",
+                bg=item_bg,
+                highlightbackground=RED if auth_required else item_bg,
+                highlightthickness=1 if auth_required else 0,
                 padx=12,
                 pady=10,
             )
             item.pack(fill="x", pady=(0, 7))
-            top = tk.Frame(item, bg="#F8FAFD")
+            top = tk.Frame(item, bg=item_bg)
             top.pack(fill="x")
             tk.Label(
                 top,
                 text=user["username"],
-                bg="#F8FAFD",
-                fg=INK,
+                bg=item_bg,
+                fg=RED if auth_required else INK,
                 font=(FONT_UI, 9, "bold"),
             ).pack(side="left")
             met = bool(user.get("requirements_met"))
@@ -2448,7 +2646,11 @@ class BoyaApp(tk.Tk):
                 for gap in user.get("gaps", [])
                 if int(gap.get("remaining_to_select", 0)) > 0
             )
-            if met:
+            if auth_required:
+                status_text = self.t("需重新登录")
+                status_bg = RED
+                status_fg = "#FFFFFF"
+            elif met:
                 status_text = self.t("要求已完成")
                 status_bg = GREEN_SOFT
                 status_fg = GREEN
@@ -2481,7 +2683,7 @@ class BoyaApp(tk.Tk):
             required = sum(int(gap.get("required", 0)) for gap in gaps)
             completed = sum(int(gap.get("completed", 0)) for gap in gaps)
             progress = 100 if met else (min(100, int(completed * 100 / required)) if required else 0)
-            bar_row = tk.Frame(item, bg="#F8FAFD")
+            bar_row = tk.Frame(item, bg=item_bg)
             bar_row.pack(fill="x", pady=(8, 0))
             bar = ttk.Progressbar(
                 bar_row,
@@ -2493,8 +2695,8 @@ class BoyaApp(tk.Tk):
             tk.Label(
                 bar_row,
                 text=f"{completed}/{required or '—'}  {progress}%",
-                bg="#F8FAFD",
-                fg=MUTED,
+                bg=item_bg,
+                fg=RED if auth_required else MUTED,
                 font=(FONT_UI, 7),
             ).pack(side="right", padx=(10, 0))
             valid_count = (
@@ -2526,8 +2728,8 @@ class BoyaApp(tk.Tk):
                         pending=user.get("pending_assessment_count", 0),
                     )
                 ),
-                bg="#F8FAFD",
-                fg=FAINT,
+                bg=item_bg,
+                fg="#B25B66" if auth_required else FAINT,
                 font=(FONT_UI, 7),
                 anchor="w",
             ).pack(fill="x", pady=(5, 0))
@@ -2579,6 +2781,16 @@ class BoyaApp(tk.Tk):
             manual_count = int(view.get("manual_selected_count", selected_count))
             machine_count = int(view.get("machine_selected_count", 0))
             machine_pending = int(view.get("machine_pending_count", 0))
+            if auth_status == "auth_required":
+                login_text = "需验证码登录"
+            elif auth_status == "login_required" or not session_exists(
+                self.store, user.username
+            ):
+                login_text = "需重新登录"
+            elif auth_status == "error":
+                login_text = "登录异常"
+            else:
+                login_text = "已登录"
             self.account_tree.insert(
                 "",
                 "end",
@@ -2587,22 +2799,14 @@ class BoyaApp(tk.Tk):
                     user.username,
                     self.t("启用" if user.enabled else "停用"),
                     self.t(user.campus),
-                    self.t(
-                        "需验证码登录"
-                        if auth_status == "auth_required"
-                        else "登录异常"
-                        if auth_status == "error"
-                        else "已登录"
-                        if session_exists(self.store, user.username)
-                        else "需重新登录"
-                    ),
+                    self.t(login_text),
                     f"{manual_count} / {machine_count}",
                     needed,
                     f"{selected_count} · {machine_pending}/{self.kit.max_pending_selected}",
                 ),
                 tags=(
                     ("auth_required",)
-                    if auth_status == "auth_required"
+                    if account_requires_sign_in(view)
                     else ()
                     if user.enabled
                     else ("disabled",)

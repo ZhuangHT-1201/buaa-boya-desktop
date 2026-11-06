@@ -16,6 +16,9 @@ def test_dynamic_templates_have_translations() -> None:
         "正在登录 {username}…",
         "已启动批量后台任务，共 {count} 个账号",
         "验证码图片：{path}",
+        "一键登录（{count}）",
+        "正在登录 {current}/{total}：{username}",
+        "成功登录 {success} 个账号，失败 {failed} 个。\n\n失败详情：\n{details}",
     }
     assert expected.issubset(ENGLISH)
 

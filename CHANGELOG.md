@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.4.1
+
+- Added a prominent Overview warning for accounts that require interactive sign-in.
+- Marked expired account cards and status badges in red with clear cached-data context.
+- Added a one-click queue that signs in every expired account sequentially.
+- Continued automatically through each account's CAPTCHA dialog and reported partial failures
+  without stopping the remaining accounts.
+- Replaced the startup sign-in modal with a non-disruptive Overview warning and bulk action.
+
 ## 0.4.0
 
 - Prevented one expired account from blocking refreshes and scans for other accounts.
