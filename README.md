@@ -2,111 +2,130 @@
 
 [English](README.md) | [简体中文](README.zh-CN.md)
 
-**A bilingual Windows desktop controller for gap-aware BUAA Boya automation.**
+**A bilingual Windows desktop controller for safer, gap-aware BUAA Boya automation.**
 
 [![CI](https://github.com/ZhuangHT-1201/buaa-boya-desktop/actions/workflows/ci.yml/badge.svg)](https://github.com/ZhuangHT-1201/buaa-boya-desktop/actions/workflows/ci.yml)
 [![Windows](https://img.shields.io/badge/platform-Windows%2010%20%7C%2011-0078D4)](https://github.com/ZhuangHT-1201/buaa-boya-desktop/releases/latest)
 [![Python](https://img.shields.io/badge/python-3.10%2B-3776AB)](pyproject.toml)
 [![License](https://img.shields.io/badge/license-MIT-green)](LICENSE)
 
-Boya Automation is a local-first desktop wrapper around
-[AutoBoya](https://github.com/DeNeRATe-cool/AutoBoya). It turns the command-line workflow into
-a visual multi-account controller: sign in through the university SSO, inspect the category gaps,
-run unattended course selection, and keep the background runner alive after the console is closed.
+Boya Automation turns the command-line [AutoBoya](https://github.com/DeNeRATe-cool/AutoBoya)
+workflow into a local, visual desktop application. It handles multiple accounts, reads Boya data
+directly, tracks category gaps and failed assessments, selects eligible autonomous check-in
+courses, and keeps attendance running after the main window is closed.
 
 ![Boya Automation overview](docs/screenshots/dashboard-en.png)
 
-> This is an independent community project and is not affiliated with Beihang University or the
-> Boya platform. Automation may violate university rules. Verify that your use is permitted, and
+> This is an independent community project. It is not affiliated with Beihang University or the
+> Boya platform. Automation may violate university rules. Confirm that your use is permitted and
 > never falsify attendance.
 
-## Highlights
+## What it does
 
-- **Gap-aware selection** — selects autonomous check-in courses only when they help satisfy an
-  unfilled category slot. Slots come from Boya statistics plus each chosen course's `pass` /
-  attendance fields (`required - (selected - failed)`), so failed assessments keep triggering
-  replacement selection.
-- **Beijing-campus selection** — automation may select Beijing, Shahe, and all-campus autonomous
-  check-in courses. Hangzhou-campus courses are excluded.
-- **Strict autonomous-only selection** — regular-signin courses are rejected both while building the
-  plan and again immediately before a selection request is sent.
-- **Manual selections stay untouched** — existing courses are recorded as manual, never dropped or
-  replaced, and shown separately from automation-selected courses.
-- **True background operation** — the GUI launches a separate runner. Closing the console does not
-  stop selection, check-in, or check-out.
-- **Multi-account workflow** — every enabled account signs in, refreshes statistics, and executes
-  independently while sharing the course catalog.
-- **Recovery backoff and process safety** — concurrent console/worker sign-ins are serialized per
-  account. Repeated OCR failures use exponential backoff instead of triggering a login storm.
-- **One-click bilingual UI** — switch between English and Chinese from the sidebar. The choice is
-  remembered for the next launch.
-- **Visual status and logs** — inspect pending categories, selected courses, account progress, live
-  activity, and the background PID without reading terminal output.
-- **Session health monitoring** — expired sessions are detected from live Boya/WebVPN responses.
-  Background re-login uses the stored password and local `ddddocr` CAPTCHA recognition (same approach
-  used by common university SSO helpers). Only accounts that still cannot sign in are paused and
-  highlighted, so check-in/out is not blocked by a single CAPTCHA prompt when OCR succeeds.
-- **Dashboard recovery queue** — expired accounts are marked red on the overview, with one
-  **Sign in all** action that handles CAPTCHA-protected accounts sequentially.
-- **Per-account status details** — see required, selected, passed, pending, failed, and remaining
-  selection counts, plus each course's attendance method, selection origin, result, and score.
-- **Live Boya status refresh** — request a fresh online status check from the UI, with visible cache
-  and catalog update timestamps.
-- **Live course polling** — course availability is read directly on a faster independent interval;
-  auto-selection pauses when that live catalog cannot be verified.
-- **Upcoming course discovery** — lists future eligible autonomous check-in courses with campus,
-  selection window, course start time, and remaining capacity.
-- **Safe defaults** — local credential storage, a dry-run mode, a pending-course limit, excluded
-  categories, and an optional delay between polling cycles.
-- **Portable Windows build** — a single-file executable is published with each release.
+- Keeps every enabled account signed in when possible and continues after the console is closed.
+- Reads course availability, selected courses, assessment results, and requirement statistics
+  directly from Boya instead of estimating them from screenshots.
+- Selects **autonomous check-in courses only**. Regular-signin courses and Hangzhou-campus courses
+  are never selected by the automation.
+- Preserves existing manual selections and labels whether each course was chosen manually or by
+  the automation.
+- Performs location check-in and check-out for both manually selected and automatically selected
+  autonomous courses. Manual regular-signin courses are left untouched.
+- Detects failed assessments and missing category slots, then keeps looking for replacement
+  autonomous courses.
+- Shows per-account progress, failed courses, upcoming opportunities, login health, and background
+  activity in one interface.
+
+## Safety and selection rules
+
+The selection pipeline is intentionally conservative:
+
+1. It reads the official Boya statistics and each selected course's result/check-in fields.
+2. It calculates usable selected slots as `selected - failed`, then compares that value with the
+   official category requirement.
+3. It filters courses by category quota, autonomous location check-in, eligibility window, campus,
+   and live capacity.
+4. It rechecks the course again immediately before sending a selection request.
+
+Manual selections are never removed, replaced, or changed. If someone else drops a course,
+availability is refreshed and the course can re-enter the candidate list.
+
+When the large course-catalog API is slow, the app may use a recent cached catalog only as an
+index. Every candidate must still pass a live per-course detail check before it can be selected.
+If that live check cannot be completed, nothing is selected from stale capacity data.
+
+## Session recovery
+
+- A worker-instance lock prevents duplicate background runners.
+- A per-account login lock prevents the desktop console and worker from competing for the same
+  SSO session.
+- Expired sessions are reauthenticated with the locally stored password when no CAPTCHA is needed.
+- CAPTCHA OCR is attempted with a bundled local `ddddocr` runtime.
+- In the desktop app, the first CAPTCHA attempt uses OCR and immediately falls back to a manual
+  dialog if the result is rejected.
+- Repeated failures use exponential backoff instead of creating a login storm.
+- Other valid accounts continue refreshing and attending while one account needs attention.
+
+CAPTCHA recognition is not guaranteed. When OCR cannot complete sign-in, the account is highlighted
+in red and can be recovered from the account list or with **Sign in all** on the Overview.
 
 ## Screenshots
 
-| Account management | Automation settings |
+| Account management | Settings |
 | --- | --- |
 | ![Account management](docs/screenshots/accounts-en.png) | ![Settings](docs/screenshots/settings-en.png) |
 
-The per-account status view distinguishes pre-existing manual choices from automation-created
-choices, and shows both category progress and each course's assessment state:
+The account status view shows category requirements, assessment status, upcoming opportunities,
+and whether each selected course was manual or machine-selected:
 
-![Selection provenance](docs/screenshots/selection-origin-en.png)
+![Account status and selection provenance](docs/screenshots/selection-origin-en.png)
 
 ## How it works
 
-1. The desktop console stores credentials in Windows Credential Manager and completes SSO sign-in.
-2. The runner refreshes the shared course catalog plus each account's selected courses and statistics.
-3. It maps unfilled requirement slots (`required - selected`) to category gaps, then filters eligible
-   Beijing, Shahe, and all-campus autonomous check-in courses. Hangzhou courses are excluded.
-   Courses with regular sign-in or no location sign point never pass the machine-selection gate.
-4. At the configured time windows, it performs check-in or check-out for every selected autonomous
-   course, regardless of whether the selection was manual or automated. Regular-signin courses are
-   ignored.
-5. The course catalog and account statistics refresh every five minutes by default. The same scan
-   also builds a visible queue of future autonomous-course opportunities.
+The desktop console and background worker are separate processes.
 
-The console and worker are separate processes. Use **Stop background** in the app when you want to
-end automation; closing the window only closes the console.
+1. The console stores credentials in Windows Credential Manager when available.
+2. The worker refreshes account state and the shared course catalog directly from Boya.
+3. It maps unfilled requirement slots to categories and builds a per-account selection plan.
+4. Eligible autonomous courses are rechecked live and selected within the remaining category
+   quota.
+5. At the configured attendance windows, it performs check-in and check-out for autonomous courses.
+6. The worker keeps running when the GUI is closed. Use **Stop background** to end automation.
+
+Account statuses refresh in parallel, so one slow account does not block the others. The shared
+course catalog is read from one recent healthy account and falls back to another account when
+needed.
+
+## Account statuses
+
+| Status | Meaning |
+| --- | --- |
+| **Signed in** | The account can currently use its stored session. |
+| **Sign in required** | The session is missing or expired. |
+| **Captcha required** | Interactive sign-in may be needed if automatic OCR cannot complete. |
+| **Sign-in error** | A network or API error occurred; the next cycle retries automatically. |
+| **Enabled** | The account participates in batch automation. |
+| **Disabled** | The account is retained but paused. |
+
+Red cards on the Overview indicate accounts that require sign-in. The **Sign in all** button
+processes all affected accounts one at a time.
 
 ## Quick start
 
-### Portable build
+### Portable Windows build
 
-1. Download the latest release from the
-   [Releases page](https://github.com/ZhuangHT-1201/buaa-boya-desktop/releases/latest).
-2. Extract the archive.
-3. Double-click `Launch Boya Automation.vbs`, or run
-   `release\BoyaAutomation.exe`.
-4. Open **Accounts**, choose **Add account**, and complete sign-in.
+1. Download the [latest release](https://github.com/ZhuangHT-1201/buaa-boya-desktop/releases/latest).
+2. Extract the ZIP archive.
+3. Double-click `Launch Boya Automation.vbs` or run `release\BoyaAutomation.exe`.
+4. Open **Accounts**, choose **Add account**, and complete SSO sign-in.
 5. Return to **Overview** and choose **Start automation**.
 
-The first launch can take several seconds because the single-file executable unpacks its runtime.
-
-<img src="docs/screenshots/add-account-en.png" width="520" alt="Add account dialog in English">
+The first launch can take longer because the single-file executable unpacks its Python, OCR, and
+model runtime.
 
 ### From source
 
-Requirements: Windows 10/11, Python 3.10 or newer, and Tk support included with the standard Python
-installer.
+Requirements: Windows 10/11 and Python 3.10 or newer with Tk support.
 
 ```powershell
 git clone https://github.com/ZhuangHT-1201/buaa-boya-desktop.git
@@ -118,21 +137,49 @@ python -m boya_kit init
 python -m boya_kit.launcher
 ```
 
-For a one-click source installation, run:
+Or run the one-click source bootstrap:
 
 ```powershell
 powershell -ExecutionPolicy Bypass -File .\scripts\bootstrap.ps1
 ```
 
+## First-run checklist
+
+- Add at least one account and wait for sign-in to complete.
+- Open **Account status** and verify the category requirements and existing selections.
+- Confirm that manually selected regular-signin courses are present and untouched.
+- Optionally enable dry-run once to inspect the planned decisions.
+- Start automation and confirm that the Overview shows **Background running**.
+
 ## Language switching
 
-Click the **English** or **中文** button at the bottom of the left sidebar. The full interface,
-dialogs, status messages, and validation prompts switch immediately. The selected language is stored
-locally in `~/.autoboya/ui-preferences.json`.
+Use the **English** or **中文** button at the bottom of the sidebar. The full interface, dialogs,
+status messages, and validation prompts switch immediately. The preference is stored locally in
+`~/.autoboya/ui-preferences.json`.
+
+## Configuration
+
+The GUI writes `config.yaml` next to the executable. Passwords are never stored there.
+
+| Key | Default | Purpose |
+| --- | --- | --- |
+| `username` | `null` | `null` processes all enabled accounts |
+| `campus` | `北京` | Account metadata; course eligibility is enforced independently |
+| `only_gap_categories` | `true` | Restrict automation to categories with an unfilled quota |
+| `prefer_categories` | moral / aesthetic / labor / health | Category priority order |
+| `exclude_categories` | `其他方面` | Categories never selected automatically |
+| `max_pending_selected` | `4` | Cap for pending automation-selected courses; manual choices are not counted |
+| `poll_seconds` | `60` | Attendance and decision scan interval |
+| `course_refresh_seconds` | `30` | Live course availability refresh interval |
+| `status_refresh_seconds` | `60` | Direct account-statistics refresh interval |
+| `refresh_seconds` | `300` | Legacy compatibility value; live intervals above control refresh |
+| `dry_run` | `false` | Record decisions without making real selection or attendance requests |
+
+Use a dry run first, verify the selected categories and course types, then disable it.
 
 ## Command-line interface
 
-The original automation workflow remains available:
+The original command-line workflow is still available:
 
 ```powershell
 python -m boya_kit init
@@ -146,43 +193,47 @@ python -m boya_kit stop
 python -m boya_kit logs --lines 100
 ```
 
-`setup` adds accounts to batch mode. Leave `username: null` in `config.yaml` to process every enabled
-account; set it to one account only when you intentionally want a single-account command-line run.
+## Troubleshooting
 
-## Configuration
+### The account is red or says “Sign in required”
 
-The GUI writes `config.yaml` next to the executable. Passwords are never stored there.
+Open **Accounts**, select the affected account, and choose **Sign in again**. If several accounts
+need attention, use **Sign in all** on the Overview and complete each CAPTCHA dialog as it appears.
 
-| Key | Default | Purpose |
-| --- | --- | --- |
-| `username` | `null` | `null` processes all enabled accounts |
-| `campus` | `北京` | Account metadata; course eligibility is enforced independently |
-| `only_gap_categories` | `true` | Prefer courses that satisfy unfinished categories |
-| `prefer_categories` | moral / aesthetic / labor / health | Gap priority order |
-| `exclude_categories` | `其他方面` | Categories that are never selected automatically |
-| `max_pending_selected` | `4` | Cap for pending automation-selected courses; manual selections are not counted or changed |
-| `poll_seconds` | `60` | Selection and attendance scan interval |
-| `refresh_seconds` | `300` | Full course, selection, and statistics refresh interval |
-| `dry_run` | `false` | Log decisions without making real requests |
+### The app says live course data is being revalidated
 
-Use dry-run mode for the first refresh, verify the eligibility rules, and only then enable real
-selections.
+The large course-catalog request was slow. Recent cached candidates are still checked one by one
+against the live course-detail endpoint. Selection only proceeds after that check succeeds.
 
-## Privacy and security
+### No course was selected although a category is missing
 
-- Credentials are stored through the operating system keyring when available.
-- Local sessions, statistics, courses, and logs live under `C:\Users\<you>\.autoboya`.
-- Selection provenance is stored in `.autoboya/cache/selection_origins.json`. Existing entries migrate
-  as manual selections; successful automation selections are marked separately.
-- No account data is uploaded by this project.
-- Removing an account from the GUI does not automatically erase its Windows Credential Manager entry.
-- Do not attach passwords, cookies, session exports, or identifiable screenshots to public issues.
+Possible reasons include:
 
-BUAA SSO sessions can expire. If reauthentication requires a CAPTCHA, open **Accounts**, select the
-highlighted account, and choose **Sign in again**. Other valid accounts continue running meanwhile.
+- no open autonomous check-in course currently matches the missing category;
+- every matching course is full or outside its selection window;
+- the account status could not be refreshed;
+- the machine-selected pending-course limit has been reached;
+- the category is listed in `exclude_categories`.
 
-Please report vulnerabilities through GitHub's private vulnerability reporting rather than a public
-issue. See [SECURITY.md](SECURITY.md).
+Open **Account status** for the exact requirements and upcoming opportunities.
+
+### Check-in or check-out did not complete
+
+The worker retries failed attendance actions while the attendance window remains open. If the
+session requires interactive authentication, the account is marked in red and other accounts
+continue running.
+
+## Privacy and local data
+
+- Credentials are stored through Windows Credential Manager when available.
+- Local sessions, caches, logs, and preferences live under `C:\Users\<you>\.autoboya`.
+- Selection provenance is stored in `.autoboya/cache/selection_origins.json`.
+- The application does not upload account data to this project.
+- Removing an account from the GUI does not automatically remove its Windows credential entry.
+- Never attach passwords, cookies, session exports, or identifiable screenshots to public issues.
+
+Please report security issues using GitHub's private vulnerability reporting. See
+[SECURITY.md](SECURITY.md).
 
 ## Build the Windows executable
 
@@ -190,33 +241,54 @@ issue. See [SECURITY.md](SECURITY.md).
 powershell -ExecutionPolicy Bypass -File .\scripts\build-exe.ps1
 ```
 
-The build creates `release\BoyaAutomation.exe` and a Chinese-named compatibility executable. The
-script uses a dedicated `.build-venv`, so build dependencies do not modify the application runtime.
+The build creates `release\BoyaAutomation.exe` and a Chinese-named compatibility executable. It
+also bundles the OCR engine, model files, and runtime dependencies.
 
-## Project structure
+To regenerate the three main English screenshots with the anonymous demo store:
+
+```powershell
+python scripts\capture-doc-screenshots.py
+```
+
+## Development
+
+```powershell
+python -m pip install -r requirements-dev.txt
+python -m pytest -q
+```
+
+Project layout:
 
 ```text
 boya_kit/
-  gui.py          Tkinter desktop console and bilingual UI
-  i18n.py         English translation catalog
-  runner.py       Gap-aware background automation
-  selections.py   Manual/automation provenance and reconciliation
-  service.py      Worker lifecycle, keyring, and login helpers
-  cli.py          Typer command-line interface
-docs/screenshots/ English interface screenshots
-scripts/          Setup, launch, and packaging scripts
-tests/            Localization and gap-filter tests
+  gui.py          Bilingual Tkinter desktop console
+  i18n.py         English UI catalog
+  runner.py       Gap-aware worker, live refresh, recovery, and attendance
+  service.py      Keyring, SSO login, CAPTCHA, and worker lifecycle
+  gaps.py         Official-statistics and assessment reconciliation
+  selections.py   Manual/automation provenance
+docs/screenshots/ Current English UI screenshots
+scripts/          Setup, launch, screenshot, and packaging scripts
+tests/            Regression tests for gaps, sessions, locking, and selection rules
 ```
+
+## Limitations
+
+- Windows only.
+- CAPTCHA OCR can fail; manual confirmation is still required in some cases.
+- WebVPN can be slow or intermittent. The app pauses unsafe actions and retries, but it cannot
+  control the university's network availability.
+- The project cannot guarantee a seat in a full or rapidly changing course.
 
 ## Contributing
 
-Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), keep secrets out of commits, and
-include verification for behavior changes.
+Contributions are welcome. Read [CONTRIBUTING.md](CONTRIBUTING.md), keep secrets and personal
+caches out of commits, and include tests for behavior changes.
 
 ## License
 
 Released under the [MIT License](LICENSE).
 
 The automation layer builds on the MIT-licensed
-[AutoBoya](https://github.com/DeNeRATe-cool/AutoBoya) project. Its upstream limitations and
-third-party notices continue to apply.
+[AutoBoya](https://github.com/DeNeRATe-cool/AutoBoya) project. Its limitations and third-party
+notices continue to apply.
