@@ -358,3 +358,65 @@ def test_runner_logs_in_before_using_missing_session(tmp_path, monkeypatch) -> N
 
     assert runner._with_reauth("student", lambda client: client.ping()) == "ok"
     assert login_calls == ["student"]
+
+
+def test_one_timed_out_account_does_not_block_other_status_refresh(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    store = AutoBoyaStore(tmp_path)
+    store.init()
+    for username in ("good", "timeout"):
+        store.upsert_user(
+            UserRecord(username=username, enabled=True, campus="北京")
+        )
+        mark_auth_ok(store, username)
+    runner = GapAwareRunner(store, KitConfig())
+
+    def fake_with_reauth(
+        username: str,
+        _operation,
+        retry_attempts: int = 1,
+    ):
+        assert retry_attempts == 1
+        if username == "timeout":
+            raise TimeoutError("The read operation timed out")
+        return [], {"statistical": {}}
+
+    runner._with_reauth = fake_with_reauth  # type: ignore[method-assign]
+
+    ready = runner.refresh_user_statuses_once()
+
+    assert ready == {"good"}
+    assert account_health(store, "timeout")["status"] == "error"
+
+
+def test_course_pool_uses_one_recent_healthy_account(tmp_path) -> None:
+    store = AutoBoyaStore(tmp_path)
+    store.init()
+    for username in ("older", "newer"):
+        store.upsert_user(
+            UserRecord(username=username, enabled=True, campus="北京")
+        )
+    mark_auth_ok(store, "older")
+    mark_auth_ok(store, "newer")
+    health = store.load_json("cache/account_health.json", {})
+    health["older"]["last_success_at"] = "2026-11-08T10:00:00"
+    health["newer"]["last_success_at"] = "2026-11-08T11:00:00"
+    store.save_json("cache/account_health.json", health)
+    runner = GapAwareRunner(store, KitConfig())
+    calls: list[str] = []
+
+    def fake_with_reauth(
+        username: str,
+        _operation,
+        retry_attempts: int = 1,
+    ):
+        assert retry_attempts == 1
+        calls.append(username)
+        return []
+
+    runner._with_reauth = fake_with_reauth  # type: ignore[method-assign]
+
+    assert runner.refresh_courses_once() is True
+    assert calls == ["newer"]

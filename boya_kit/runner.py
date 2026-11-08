@@ -3,9 +3,12 @@ from __future__ import annotations
 import logging
 import os
 import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime, timedelta
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
+
+import httpx
 
 from autoboya.cache import CourseCache
 from autoboya.exceptions import (
@@ -145,6 +148,8 @@ class GapAwareRunner(AutomationRunner):
         try:
             while not stop.exists():
                 now = time.time()
+                course_attempted = False
+                status_attempted = False
                 course_seconds = max(10, self.kit.course_refresh_seconds)
                 status_seconds = max(30, self.kit.status_refresh_seconds)
                 scan_seconds = max(
@@ -181,8 +186,10 @@ class GapAwareRunner(AutomationRunner):
                                 "cache refresh failed after account change",
                                 error=exc,
                             )
-                        last_course_refresh = now
-                        last_status_refresh = now
+                        course_attempted = True
+                        status_attempted = True
+                        last_course_refresh = time.time()
+                        last_status_refresh = time.time()
                         user_fingerprint = current_users
                         refresh_request.unlink(missing_ok=True)
                         log_event(logger, logging.INFO, "account list changed; caches refreshed")
@@ -190,8 +197,10 @@ class GapAwareRunner(AutomationRunner):
                     if requested_refresh:
                         try:
                             self.refresh_once()
-                            last_course_refresh = now
-                            last_status_refresh = now
+                            course_attempted = True
+                            status_attempted = True
+                            last_course_refresh = time.time()
+                            last_status_refresh = time.time()
                             log_event(
                                 logger,
                                 logging.INFO,
@@ -224,7 +233,8 @@ class GapAwareRunner(AutomationRunner):
                                 "live course refresh failed",
                                 error=exc,
                             )
-                        last_course_refresh = now
+                        course_attempted = True
+                        last_course_refresh = time.time()
                     if not requested_refresh and now - last_status_refresh >= status_seconds:
                         try:
                             self.refresh_user_statuses_once()
@@ -236,13 +246,34 @@ class GapAwareRunner(AutomationRunner):
                                 "account status refresh failed",
                                 error=exc,
                             )
-                        last_status_refresh = now
+                        status_attempted = True
+                        last_status_refresh = time.time()
                     decisions = self.scan_once(
                         allow_selection=self._course_catalog_fresh,
                         selection_usernames=self._selection_ready_users,
                     )
                     self.log_heartbeat(decisions)
                     self.execute_decisions(decisions)
+                    if not requested_refresh and refresh_request.exists():
+                        try:
+                            if not (course_attempted and status_attempted):
+                                self.refresh_once()
+                                course_attempted = True
+                                status_attempted = True
+                            log_event(
+                                logger,
+                                logging.INFO,
+                                "manual cache refresh satisfied by current cycle",
+                            )
+                        except Exception as exc:
+                            log_event(
+                                logger,
+                                logging.ERROR,
+                                "manual cache refresh failed",
+                                error=exc,
+                            )
+                        finally:
+                            refresh_request.unlink(missing_ok=True)
                 except Exception as exc:
                     log_event(logger, logging.ERROR, "boya_kit loop failed", error=exc)
                 _sleep_and_watch_stop(
@@ -272,7 +303,6 @@ class GapAwareRunner(AutomationRunner):
         if not users:
             self._course_catalog_fresh = False
             return False
-        import random
 
         health = load_account_health(self.store)
         pool_candidates = [
@@ -280,16 +310,20 @@ class GapAwareRunner(AutomationRunner):
             for user in users
             if health.get(user.username, {}).get("status") != STATUS_AUTH_REQUIRED
         ]
-        random.shuffle(pool_candidates)
+        pool_candidates.sort(
+            key=lambda user: (
+                health.get(user.username, {}).get("status") == "ok",
+                str(health.get(user.username, {}).get("last_success_at") or ""),
+            ),
+            reverse=True,
+        )
         for pool_user in pool_candidates:
             try:
                 courses = self._with_reauth(
                     pool_user.username,
                     lambda client: client.query_courses(page_size=200),
-                    retry_attempts=3,
+                    retry_attempts=1,
                 )
-            except ReauthenticationRequired:
-                continue
             except Exception as exc:
                 log_event(
                     logger,
@@ -319,30 +353,58 @@ class GapAwareRunner(AutomationRunner):
     def refresh_user_statuses_once(self) -> set[str]:
         users = self.enabled_users()
         ready: set[str] = set()
-        for user in users:
-            if account_health(self.store, user.username).get("status") == STATUS_AUTH_REQUIRED:
-                continue
+        pending = [
+            user
+            for user in users
+            if account_health(self.store, user.username).get("status")
+            != STATUS_AUTH_REQUIRED
+        ]
+
+        def fetch(user: UserRecord):
             try:
                 selected, statistics = self._with_reauth(
                     user.username,
                     lambda client: self._query_user_status(client),
-                    retry_attempts=3,
+                    retry_attempts=1,
                 )
-            except ReauthenticationRequired:
-                continue
+                return user, selected, statistics, None
             except Exception as exc:
-                mark_auth_error(self.store, user.username, str(exc))
-                log_event(
-                    logger,
-                    logging.ERROR,
-                    "account cache refresh failed",
-                    user=mask_username(user.username),
-                    error=exc,
-                )
-                continue
-            self.cache.save_selected(user.username, selected)
-            self.cache.save_statistics(user.username, statistics)
-            ready.add(user.username)
+                return user, None, None, exc
+
+        with ThreadPoolExecutor(
+            max_workers=min(4, max(1, len(pending))),
+            thread_name_prefix="boya-status",
+        ) as executor:
+            futures = {
+                executor.submit(fetch, user): user
+                for user in pending
+            }
+            for future in as_completed(futures):
+                fallback_user = futures[future]
+                try:
+                    user, selected, statistics, error = future.result()
+                except Exception as exc:
+                    user, selected, statistics, error = (
+                        fallback_user,
+                        None,
+                        None,
+                        exc,
+                    )
+                if isinstance(error, ReauthenticationRequired):
+                    continue
+                if error is not None:
+                    mark_auth_error(self.store, user.username, str(error))
+                    log_event(
+                        logger,
+                        logging.ERROR,
+                        "account cache refresh failed",
+                        user=mask_username(user.username),
+                        error=error,
+                    )
+                    continue
+                self.cache.save_selected(user.username, selected or [])
+                self.cache.save_statistics(user.username, statistics or {})
+                ready.add(user.username)
         reconcile_selection_origins(
             self.store,
             self._selected_by_user(self.cache.load_selected()),
@@ -863,6 +925,12 @@ class GapAwareRunner(AutomationRunner):
         for attempt in range(1, retry_attempts + 1):
             try:
                 client = ensure_bykc_client(self.store, username)
+                http_client = getattr(client, "client", None)
+                if isinstance(http_client, httpx.Client):
+                    http_client.timeout = httpx.Timeout(
+                        20.0,
+                        connect=10.0,
+                    )
                 try:
                     result = operation(client)
                 except SessionExpired:
@@ -879,32 +947,32 @@ class GapAwareRunner(AutomationRunner):
                         )
                         raise ReauthenticationRequired(detail)
                     client = ensure_bykc_client(self.store, username)
+                    http_client = getattr(client, "client", None)
+                    if isinstance(http_client, httpx.Client):
+                        http_client.timeout = httpx.Timeout(
+                            20.0,
+                            connect=10.0,
+                        )
                     result = operation(client)
             except ReauthenticationRequired:
                 raise
             except CaptchaRequired as exc:
-                detail = str(exc) or "CAPTCHA required"
                 if self._auto_relogin(username):
                     continue
-                capture_path = getattr(
-                    getattr(exc, "challenge", None),
-                    "image_path",
-                    None,
+                detail = (
+                    account_health(self.store, username).get("error")
+                    or str(exc)
+                    or "CAPTCHA required"
                 )
-                mark_auth_required(
-                    self.store,
-                    username,
-                    detail,
-                    capture_path,
-                )
-                notify_auth_required(username)
                 raise ReauthenticationRequired(detail) from exc
             except LoginError as exc:
-                detail = str(exc) or "unified authentication login failed"
                 if self._auto_relogin(username):
                     continue
-                mark_auth_required(self.store, username, detail)
-                notify_auth_required(username)
+                detail = (
+                    account_health(self.store, username).get("error")
+                    or str(exc)
+                    or "unified authentication login failed"
+                )
                 raise ReauthenticationRequired(detail) from exc
             except Exception as exc:
                 if attempt >= retry_attempts:

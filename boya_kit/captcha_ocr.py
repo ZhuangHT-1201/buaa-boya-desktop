@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 import re
+import threading
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -9,24 +10,27 @@ from typing import Any
 logger = logging.getLogger(__name__)
 
 _CAPTCHA_CLEAN = re.compile(r"[^0-9A-Za-z]")
+_OCR_ENGINE_LOCK = threading.Lock()
+_OCR_INFERENCE_LOCK = threading.Lock()
 
 
 @lru_cache(maxsize=1)
 def _ocr_engine() -> Any | None:
     """Lazy-load ddddocr; common for Chinese university SSO captchas."""
-    try:
-        import ddddocr
-    except Exception as exc:  # pragma: no cover - optional dependency
-        logger.warning("ddddocr unavailable for captcha OCR: %s", exc)
-        return None
-    try:
-        # show_ad=False avoids noisy startup banners in background workers.
-        return ddddocr.DdddOcr(show_ad=False)
-    except TypeError:
-        return ddddocr.DdddOcr()
-    except Exception as exc:  # pragma: no cover - runtime init failure
-        logger.warning("ddddocr init failed: %s", exc)
-        return None
+    with _OCR_ENGINE_LOCK:
+        try:
+            import ddddocr
+        except Exception as exc:  # pragma: no cover - optional dependency
+            logger.warning("ddddocr unavailable for captcha OCR: %s", exc)
+            return None
+        try:
+            # show_ad=False avoids noisy startup banners in background workers.
+            return ddddocr.DdddOcr(show_ad=False)
+        except TypeError:
+            return ddddocr.DdddOcr()
+        except Exception as exc:  # pragma: no cover - runtime init failure
+            logger.warning("ddddocr init failed: %s", exc)
+            return None
 
 
 def captcha_ocr_available() -> bool:
@@ -38,7 +42,8 @@ def recognize_captcha_bytes(image: bytes) -> str | None:
     if engine is None or not image:
         return None
     try:
-        raw = engine.classification(image)
+        with _OCR_INFERENCE_LOCK:
+            raw = engine.classification(image)
     except Exception as exc:
         logger.warning("captcha OCR failed: %s", exc)
         return None

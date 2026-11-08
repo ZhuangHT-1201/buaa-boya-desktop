@@ -1,5 +1,19 @@
 # Changelog
 
+## 0.5.1
+
+- Refreshes account statuses concurrently and reads the shared course catalog from one recent healthy
+  account, so one WebVPN timeout no longer blocks the complete worker cycle.
+- Uses fast one-attempt reads for background cache refresh; failed accounts are retried on the next
+  scheduled cycle while successful accounts continue.
+- Reduces Boya data-read timeouts and records the next refresh schedule after each completed attempt.
+- Coalesces a manual refresh request with any full refresh already completed in the current cycle,
+  preventing users from waiting through a duplicate refresh.
+- Serializes `ddddocr` model inference so simultaneous account recovery cannot corrupt or crash the
+  shared OCR engine.
+- Removes duplicate reauthentication warnings when OCR fails and keeps manual CAPTCHA fallback in
+  the desktop app.
+
 ## 0.5.0
 
 - Background re-login now uses local `ddddocr` to read SSO CAPTCHA images and restore expired
