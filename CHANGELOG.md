@@ -8,6 +8,14 @@
   failed assessments continue to trigger replacement selection.
 - Live course availability and account status refresh on separate intervals, and selection prefers
   courses that still have remaining seats.
+- Added cross-process account-login locks, exponential retry backoff, and duplicate-notification
+  suppression so the desktop console and background runner cannot trigger competing CAPTCHA login
+  attempts.
+- CAPTCHA OCR now fails fast when its bundled runtime is unavailable instead of repeating the same
+  login request, and packaged builds explicitly include the OCR model data.
+- Selection is capped by each category's remaining quota, preventing one unfilled category from
+  consuming several slots while another category is still missing.
+- Added rotating worker logs and centralized missing-session recovery before Boya requests.
 
 ## 0.4.1
 

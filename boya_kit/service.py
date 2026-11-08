@@ -19,11 +19,20 @@ from autoboya.storage import (
 )
 
 from .account_health import mark_auth_error, mark_auth_ok, mark_auth_required
-from .captcha_ocr import ocr_captcha_provider, recognize_captcha_file
+from .captcha_ocr import captcha_ocr_available, ocr_captcha_provider
 from .config import PROJECT_ROOT, REFRESH_REQUEST_FILE, RUN_PID_FILE, STOP_FILE
+from .locking import LockUnavailable, account_login_lock
 
 CAPTCHA_REFRESH_SENTINEL = "__CAPTCHA_REFRESH__"
 CAPTCHA_OCR_ATTEMPTS = 3
+
+
+class AccountLoginBusy(RuntimeError):
+    """Another process or thread is already signing in to this account."""
+
+
+class CaptchaResolutionError(RuntimeError):
+    """The CAPTCHA cannot be resolved without another network attempt."""
 
 
 def mask_username(username: str) -> str:
@@ -191,6 +200,27 @@ def login_account(
     *,
     allow_ocr: bool = True,
 ) -> object:
+    try:
+        with account_login_lock(store, username):
+            return _login_account_locked(
+                store,
+                username,
+                password,
+                captcha_provider=captcha_provider,
+                allow_ocr=allow_ocr,
+            )
+    except LockUnavailable as exc:
+        raise AccountLoginBusy("该账号正在由另一个后台任务登录，请稍后") from exc
+
+
+def _login_account_locked(
+    store: AutoBoyaStore,
+    username: str,
+    password: str,
+    *,
+    captcha_provider: Callable[[object], str] | None,
+    allow_ocr: bool,
+) -> object:
     last_error: Exception | None = None
     cleanup_captcha_files(store)
     max_attempts = 4 if allow_ocr else 3
@@ -240,15 +270,13 @@ def login_account(
                 captcha_path,
             )
             raise RuntimeError(message or "统一身份认证登录失败") from exc
+        except CaptchaResolutionError as exc:
+            last_error = exc
+            mark_auth_required(store, username, str(exc), captcha_path)
+            raise
         except RuntimeError as exc:
             last_error = exc
             message = str(exc)
-            if (
-                allow_ocr
-                and attempt < max_attempts
-                and ("验证码" in message or "captcha" in message.lower())
-            ):
-                continue
             mark_auth_required(store, username, message, captcha_path)
             raise
         store.save_json(
@@ -271,18 +299,33 @@ def _resolve_captcha(
     allow_ocr: bool,
     attempt: int,
 ) -> str:
+    ocr_attempt_limit = (
+        CAPTCHA_OCR_ATTEMPTS
+        if captcha_provider is None
+        else 1
+    )
+    if allow_ocr and attempt <= ocr_attempt_limit:
+        if not captcha_ocr_available():
+            if captcha_provider is not None:
+                return captcha_provider(challenge).strip()
+            raise CaptchaResolutionError(
+                "验证码自动识别组件不可用，请重新安装完整版本或手动登录"
+            )
+        try:
+            value = ocr_captcha_provider(challenge).strip()
+        except RuntimeError as exc:
+            if captcha_provider is not None:
+                return captcha_provider(challenge).strip()
+            raise CaptchaResolutionError(
+                "图形验证码自动识别失败，请手动登录"
+            ) from exc
+        if value:
+            return value
+        if captcha_provider is not None:
+            return captcha_provider(challenge).strip()
+        raise CaptchaResolutionError("图形验证码自动识别失败，请手动登录")
     if captcha_provider is not None:
         return captcha_provider(challenge).strip()
-    if allow_ocr and attempt <= CAPTCHA_OCR_ATTEMPTS:
-        try:
-            return ocr_captcha_provider(challenge).strip()
-        except RuntimeError:
-            image_path = getattr(challenge, "image_path", None)
-            if image_path and recognize_captcha_file(image_path) is None:
-                raise RuntimeError(
-                    "登录需要验证码，自动识别失败，请在图形界面中重试"
-                )
-            raise
     raise RuntimeError("登录需要验证码，请在图形界面中重试")
 
 

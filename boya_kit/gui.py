@@ -2329,13 +2329,7 @@ class BoyaApp(tk.Tk):
         self.show_toast(self.t("设置已保存，后台下一轮生效"), "success")
 
     def _worker_captcha_provider(self, challenge: object) -> str:
-        from .captcha_ocr import recognize_captcha_file
-
         image_path = Path(getattr(challenge, "image_path", "") or "")
-        if image_path:
-            guessed = recognize_captcha_file(image_path)
-            if guessed:
-                return guessed
         event = threading.Event()
         holder: dict[str, str] = {}
         self.events.put(("captcha", (image_path, event, holder)))

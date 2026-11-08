@@ -3,7 +3,8 @@ from __future__ import annotations
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+from logging.handlers import RotatingFileHandler
 from pathlib import Path
 
 from autoboya.cache import CourseCache
@@ -53,11 +54,12 @@ from .config import (
 from .gaps import (
     gaps_payload,
     needed_categories,
+    parse_gaps,
     prefer_sort_key,
     requirements_met,
-    selection_requirements_met,
 )
 from .captcha_ocr import captcha_ocr_available
+from .locking import LockUnavailable, file_lock
 from .notify import notify_auth_required
 from .selections import (
     ORIGIN_MACHINE,
@@ -67,12 +69,18 @@ from .selections import (
     origin_for,
     reconcile_selection_origins,
 )
-from .service import cleanup_captcha_files, login_account, password_for_account
+from .service import (
+    AccountLoginBusy,
+    cleanup_captcha_files,
+    login_account,
+    password_for_account,
+)
 
 logger = logging.getLogger(__name__)
 
 # Retry OCR/password re-login quickly so check-in is not blocked after session loss.
 AUTO_REAUTH_RETRY_SECONDS = 45
+AUTO_REAUTH_MAX_BACKOFF_SECONDS = 1800
 
 
 class ReauthenticationRequired(RuntimeError):
@@ -96,9 +104,27 @@ class GapAwareRunner(AutomationRunner):
 
     def run_forever(self) -> None:
         self.store.init()
+        try:
+            with file_lock(
+                self.store,
+                "run/worker.lock",
+                stale_after=0.0,
+            ):
+                self._run_forever_locked()
+        except LockUnavailable:
+            logger.warning("another Boya worker is already active")
+
+    def _run_forever_locked(self) -> None:
+        self.store.init()
         cleanup_captcha_files(self.store)
         configure_logging(self.store, console=False)
         _attach_kit_file_logger(self.store.path(LOG_FILE))
+        log_event(
+            logger,
+            logging.INFO,
+            "worker runtime ready",
+            captcha_ocr=captcha_ocr_available(),
+        )
         self.store.path(RUN_PID_FILE).parent.mkdir(parents=True, exist_ok=True)
         self.store.path(RUN_PID_FILE).write_text(str(os.getpid()), encoding="utf-8")
         stop = self.store.path(STOP_FILE)
@@ -184,8 +210,12 @@ class GapAwareRunner(AutomationRunner):
                             refresh_request.unlink(missing_ok=True)
                     elif now - last_course_refresh >= course_seconds:
                         try:
-                            self._retry_stored_password_logins()
-                            self.refresh_courses_once()
+                            courses_fresh = self.refresh_courses_once()
+                            recovered = self._retry_stored_password_logins(
+                                max_attempts=1
+                            )
+                            if not courses_fresh and recovered:
+                                self.refresh_courses_once()
                         except Exception as exc:
                             self._course_catalog_fresh = False
                             log_event(
@@ -230,8 +260,10 @@ class GapAwareRunner(AutomationRunner):
         self.store.path(STOP_FILE).write_text(datetime.now().isoformat(), encoding="utf-8")
 
     def refresh_once(self) -> bool:
-        self._retry_stored_password_logins()
         courses_fresh = self.refresh_courses_once()
+        recovered = self._retry_stored_password_logins(max_attempts=1)
+        if not courses_fresh and recovered:
+            courses_fresh = self.refresh_courses_once()
         self.refresh_user_statuses_once()
         return courses_fresh
 
@@ -318,21 +350,25 @@ class GapAwareRunner(AutomationRunner):
         self._selection_ready_users = ready
         return ready
 
-    def _retry_stored_password_logins(self) -> None:
+    def _retry_stored_password_logins(
+        self,
+        *,
+        max_attempts: int | None = None,
+    ) -> int:
         now = datetime.now()
+        attempted = 0
+        recovered = 0
         for user in self.enabled_users():
             health = account_health(self.store, user.username)
             if health.get("status") != STATUS_AUTH_REQUIRED:
                 continue
-            try:
-                updated_at = datetime.fromisoformat(
-                    str(health.get("updated_at") or "")
-                )
-            except ValueError:
-                updated_at = datetime.min
-            if (now - updated_at).total_seconds() < AUTO_REAUTH_RETRY_SECONDS:
+            if not _auth_retry_due(health, now):
                 continue
+            if max_attempts is not None and attempted >= max_attempts:
+                break
+            attempted += 1
             if self._auto_relogin(user.username):
+                recovered += 1
                 log_event(
                     logger,
                     logging.INFO,
@@ -348,9 +384,11 @@ class GapAwareRunner(AutomationRunner):
                     user=mask_username(user.username),
                     error=account_health(self.store, user.username).get("error"),
                 )
+        return recovered
 
     def _auto_relogin(self, username: str) -> bool:
         """Re-login with stored password and local captcha OCR when needed."""
+        previous = account_health(self.store, username)
         try:
             password = password_for_account(self.store, username)
             login_account(
@@ -360,7 +398,24 @@ class GapAwareRunner(AutomationRunner):
                 allow_ocr=True,
             )
             return True
+        except AccountLoginBusy:
+            log_event(
+                logger,
+                logging.INFO,
+                "account login already in progress in another process",
+                user=mask_username(username),
+            )
+            return False
         except Exception as exc:
+            failure_count = int(previous.get("failure_count") or 0) + 1
+            delay = min(
+                AUTO_REAUTH_MAX_BACKOFF_SECONDS,
+                AUTO_REAUTH_RETRY_SECONDS
+                * (2 ** min(6, max(0, failure_count - 1))),
+            )
+            next_retry_at = (
+                datetime.now() + timedelta(seconds=delay)
+            ).isoformat(timespec="seconds")
             captcha_path = None
             challenge_path = getattr(getattr(exc, "challenge", None), "image_path", None)
             if challenge_path:
@@ -369,8 +424,16 @@ class GapAwareRunner(AutomationRunner):
                 health = account_health(self.store, username)
                 raw_path = health.get("captcha_path")
                 captcha_path = Path(raw_path) if raw_path else None
-            mark_auth_required(self.store, username, str(exc), captcha_path)
-            notify_auth_required(username)
+            mark_auth_required(
+                self.store,
+                username,
+                str(exc),
+                captcha_path,
+                failure_count=failure_count,
+                next_retry_at=next_retry_at,
+            )
+            if previous.get("status") != STATUS_AUTH_REQUIRED:
+                notify_auth_required(username)
             return False
 
     def _query_user_status(self, client):
@@ -447,20 +510,6 @@ class GapAwareRunner(AutomationRunner):
                 )
                 continue
 
-            if selection_requirements_met(
-                stats,
-                exclude=self.kit.exclude_categories,
-                selected_items=selected_items,
-                now=now,
-            ):
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "all requirement slots selected; skip auto-select",
-                    user=mask_username(user.username),
-                )
-                continue
-
             if len(machine_pending) >= self.kit.max_pending_selected:
                 log_event(
                     logger,
@@ -472,27 +521,37 @@ class GapAwareRunner(AutomationRunner):
                 )
                 continue
 
-            needed = needed_categories(
-                stats,
-                exclude=self.kit.exclude_categories,
-                selected_items=selected_items,
-                now=now,
-            )
-            if self.kit.only_gap_categories and not needed:
-                log_event(
-                    logger,
-                    logging.INFO,
-                    "no unfilled category slots; skip auto-select",
-                    user=mask_username(user.username),
-                )
-                continue
+            category_quotas: dict[str, int] = {}
+            if self.kit.only_gap_categories:
+                category_quotas = {
+                    gap.category: gap.remaining_to_select
+                    for gap in parse_gaps(
+                        stats,
+                        selected_items=selected_items,
+                        now=now,
+                    )
+                    if gap.remaining_to_select > 0
+                    and gap.category not in self.kit.exclude_categories
+                }
+                if not category_quotas:
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "no unfilled category slots; skip auto-select",
+                        user=mask_username(user.username),
+                    )
+                    continue
+            needed = set(category_quotas)
 
             candidates = [
                 course
                 for course in courses
                 if is_machine_selectable_course(course, now)
                 and course.category not in self.kit.exclude_categories
-                and (not self.kit.only_gap_categories or course.category in needed)
+                and (
+                    not self.kit.only_gap_categories
+                    or course.category in needed
+                )
                 and not user_has_selected(selected_by_user, user.username, course.id)
             ]
             candidates.sort(
@@ -514,10 +573,19 @@ class GapAwareRunner(AutomationRunner):
                 0,
                 self.kit.max_pending_selected - len(machine_pending),
             )
-            for course in candidates[:remaining_slots]:
+            selected_count = 0
+            for course in candidates:
+                if selected_count >= remaining_slots:
+                    break
+                if self.kit.only_gap_categories:
+                    quota = category_quotas.get(course.category, 0)
+                    if quota <= 0:
+                        continue
+                    category_quotas[course.category] = quota - 1
                 decisions.append(
                     AutomationDecision(action="select", course_id=course.id, username=user.username)
                 )
+                selected_count += 1
 
         return decisions
 
@@ -665,7 +733,19 @@ class GapAwareRunner(AutomationRunner):
                 False,
                 str(exc),
             )
-        except (AlreadySelected, CourseFull, CourseNotOpen, SelectionLimitReached) as exc:
+        except AlreadySelected as exc:
+            try:
+                self._refresh_user_cache(user.username)
+            except Exception:
+                pass
+            return ActionResult(
+                user.username,
+                "select",
+                course_id,
+                False,
+                str(exc),
+            )
+        except (CourseFull, CourseNotOpen, SelectionLimitReached) as exc:
             return ActionResult(
                 user.username,
                 "select",
@@ -766,19 +846,19 @@ class GapAwareRunner(AutomationRunner):
 
         current_health = account_health(self.store, username)
         if current_health.get("status") == STATUS_AUTH_REQUIRED:
-            try:
-                updated_at = datetime.fromisoformat(
-                    str(current_health.get("updated_at") or "")
-                )
-            except ValueError:
-                updated_at = datetime.min
-            age = (datetime.now() - updated_at).total_seconds()
-            if age < AUTO_REAUTH_RETRY_SECONDS or not self._auto_relogin(username):
+            if not _auth_retry_due(current_health) or not self._auto_relogin(username):
                 raise ReauthenticationRequired(
                     current_health.get("error")
                     or account_health(self.store, username).get("error")
                     or "account requires interactive login"
                 )
+        elif not _has_stored_session(self.store, username):
+            if not self._auto_relogin(username):
+                detail = (
+                    account_health(self.store, username).get("error")
+                    or "missing saved session"
+                )
+                raise ReauthenticationRequired(detail)
 
         for attempt in range(1, retry_attempts + 1):
             try:
@@ -845,6 +925,36 @@ class GapAwareRunner(AutomationRunner):
         raise RuntimeError("account request failed after retries")
 
 
+def _auth_retry_due(
+    health: dict[str, object],
+    now: datetime | None = None,
+) -> bool:
+    now = now or datetime.now()
+    try:
+        next_retry = datetime.fromisoformat(
+            str(health.get("next_retry_at") or "")
+        )
+        return now >= next_retry
+    except ValueError:
+        pass
+    try:
+        updated_at = datetime.fromisoformat(
+            str(health.get("updated_at") or "")
+        )
+    except ValueError:
+        return True
+    return (now - updated_at).total_seconds() >= AUTO_REAUTH_RETRY_SECONDS
+
+
+def _has_stored_session(store: AutoBoyaStore, username: str) -> bool:
+    session = store.load_json(f"sessions/{username}.json", {})
+    if not isinstance(session, dict):
+        return False
+    token = session.get("bykc_token")
+    cookies = session.get("cookies")
+    return bool(token) and isinstance(cookies, list)
+
+
 def _attach_kit_file_logger(path: Path) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     root = logging.getLogger()
@@ -854,7 +964,12 @@ def _attach_kit_file_logger(path: Path) -> None:
             existing = getattr(handler, "baseFilename", None)
             if existing and str(Path(existing).resolve()) == target:
                 return
-    handler = logging.FileHandler(path, encoding="utf-8")
+    handler = RotatingFileHandler(
+        path,
+        maxBytes=5 * 1024 * 1024,
+        backupCount=3,
+        encoding="utf-8",
+    )
     handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(message)s"))
     root.addHandler(handler)
 

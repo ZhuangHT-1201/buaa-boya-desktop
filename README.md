@@ -36,6 +36,8 @@ run unattended course selection, and keep the background runner alive after the 
   stop selection, check-in, or check-out.
 - **Multi-account workflow** — every enabled account signs in, refreshes statistics, and executes
   independently while sharing the course catalog.
+- **Recovery backoff and process safety** — concurrent console/worker sign-ins are serialized per
+  account. Repeated OCR failures use exponential backoff instead of triggering a login storm.
 - **One-click bilingual UI** — switch between English and Chinese from the sidebar. The choice is
   remembered for the next launch.
 - **Visual status and logs** — inspect pending categories, selected courses, account progress, live
@@ -50,6 +52,8 @@ run unattended course selection, and keep the background runner alive after the 
   selection counts, plus each course's attendance method, selection origin, result, and score.
 - **Live Boya status refresh** — request a fresh online status check from the UI, with visible cache
   and catalog update timestamps.
+- **Live course polling** — course availability is read directly on a faster independent interval;
+  auto-selection pauses when that live catalog cannot be verified.
 - **Upcoming course discovery** — lists future eligible autonomous check-in courses with campus,
   selection window, course start time, and remaining capacity.
 - **Safe defaults** — local credential storage, a dry-run mode, a pending-course limit, excluded

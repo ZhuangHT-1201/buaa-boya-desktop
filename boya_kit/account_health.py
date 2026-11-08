@@ -6,6 +6,8 @@ from typing import Any
 
 from autoboya.storage import AutoBoyaStore
 
+from .locking import file_lock
+
 
 ACCOUNT_HEALTH_FILE = "cache/account_health.json"
 STATUS_OK = "ok"
@@ -44,9 +46,15 @@ def account_health(store: AutoBoyaStore, username: str) -> dict[str, Any]:
 
 
 def _save(store: AutoBoyaStore, username: str, record: dict[str, Any]) -> None:
-    health = load_account_health(store)
-    health[username] = record
-    store.save_json(ACCOUNT_HEALTH_FILE, health)
+    with file_lock(
+        store,
+        "cache/account_health.lock",
+        timeout=5.0,
+        stale_after=60.0,
+    ):
+        health = load_account_health(store)
+        health[username] = record
+        store.save_json(ACCOUNT_HEALTH_FILE, health)
 
 
 def mark_auth_ok(
@@ -68,6 +76,8 @@ def mark_auth_ok(
             "error": None,
             "captcha_path": None,
             "previous_error": previous.get("error"),
+            "failure_count": 0,
+            "next_retry_at": None,
         },
     )
 
@@ -77,6 +87,9 @@ def mark_auth_required(
     username: str,
     error: str,
     captcha_path: Path | None = None,
+    *,
+    failure_count: int | None = None,
+    next_retry_at: str | None = None,
 ) -> None:
     previous = account_health(store, username)
     _save(
@@ -88,6 +101,12 @@ def mark_auth_required(
             "updated_at": datetime.now().isoformat(timespec="seconds"),
             "error": error,
             "captcha_path": str(captcha_path) if captcha_path else None,
+            "failure_count": (
+                failure_count
+                if failure_count is not None
+                else int(previous.get("failure_count") or 0)
+            ),
+            "next_retry_at": next_retry_at,
         },
     )
 

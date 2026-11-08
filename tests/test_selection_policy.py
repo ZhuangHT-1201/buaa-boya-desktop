@@ -394,6 +394,61 @@ def test_failed_pass_on_selected_course_triggers_replacement_even_if_stats_lag(
     assert AutomationDecision("select", replacement.id, "student") in decisions
 
 
+def test_scan_selects_only_the_remaining_category_quota(tmp_path) -> None:
+    store = AutoBoyaStore(tmp_path)
+    store.init()
+    store.upsert_user(
+        UserRecord(username="student", enabled=True, campus="北京")
+    )
+    courses = [
+        make_course(47, autonomous=True, category="德育"),
+        make_course(48, autonomous=True, category="德育"),
+    ]
+    for course in courses:
+        course.raw = {
+            "id": course.id,
+            "courseName": course.name,
+            "courseKind": course.category,
+            "selected": False,
+            "courseSelectStartDate": course.select_start,
+            "courseSelectEndDate": course.select_end,
+            "courseCurrentCount": course.current_count,
+            "courseMaxCount": course.max_count,
+            "courseSignConfig": course.sign_config,
+        }
+    cache = CourseCache(store)
+    cache.save_courses(courses)
+    cache.save_selected("student", [])
+    cache.save_statistics(
+        "student",
+        {
+            "statistical": {
+                "group": {
+                    "55|德育": {
+                        "assessmentCount": "1",
+                        "selectAssessmentCount": "0",
+                        "completeAssessmentCount": "0",
+                        "failAssessmentCount": "0",
+                        "undoneAssessmentCount": "0",
+                    }
+                }
+            }
+        },
+    )
+
+    runner = GapAwareRunner(
+        store,
+        KitConfig(username="student", max_pending_selected=4),
+    )
+    selections = [
+        decision
+        for decision in runner.scan_once()
+        if decision.action == "select"
+    ]
+
+    assert len(selections) == 1
+
+
 def test_legacy_failure_history_does_not_permanently_blacklist_course(
     tmp_path,
 ) -> None:
