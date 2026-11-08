@@ -1,3 +1,3 @@
 """Gap-aware Boya automation wrapper around AutoBoya."""
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"

@@ -138,6 +138,11 @@ def test_execution_rechecks_and_blocks_regular_signin(tmp_path) -> None:
         return ActionResult(user.username, "select", course_id, True, "selected")
 
     runner._select_for_user = fake_select  # type: ignore[method-assign]
+    runner._fresh_course_for_selection = (  # type: ignore[method-assign]
+        lambda _username, course_id: autonomous
+        if course_id == autonomous.id
+        else regular
+    )
     runner.execute_decisions(
         [
             AutomationDecision("select", regular.id, "student"),
@@ -194,6 +199,26 @@ def test_attendance_includes_manual_and_machine_autonomous_courses(tmp_path) -> 
     )
 
 
+def test_successful_attendance_is_not_reported_as_failed_when_refresh_fails(
+    tmp_path,
+) -> None:
+    store = AutoBoyaStore(tmp_path)
+    store.init()
+    runner = GapAwareRunner(store, KitConfig(username="student"))
+    course = make_course(35, autonomous=True)
+    runner._with_reauth = (  # type: ignore[method-assign]
+        lambda _username, _operation: None
+    )
+
+    def fail_refresh(_username: str) -> None:
+        raise RuntimeError("temporary network failure")
+
+    runner._refresh_user_cache = fail_refresh  # type: ignore[method-assign]
+    result = runner._sign_for_user("student", course, "sign")
+
+    assert result.ok is True
+
+
 def test_scan_rejects_hangzhou_autonomous_course(tmp_path) -> None:
     store = AutoBoyaStore(tmp_path)
     store.init()
@@ -246,6 +271,173 @@ def test_scan_rejects_hangzhou_autonomous_course(tmp_path) -> None:
     decisions = runner.scan_once()
 
     assert AutomationDecision("select", cross_campus.id, "student") not in decisions
+
+
+def test_failed_assessment_creates_replacement_selection(tmp_path) -> None:
+    store = AutoBoyaStore(tmp_path)
+    store.init()
+    store.upsert_user(
+        UserRecord(username="student", enabled=True, campus="北京")
+    )
+    replacement = make_course(45, autonomous=True, category="德育")
+    replacement.raw = {
+        "id": replacement.id,
+        "courseName": replacement.name,
+        "courseKind": replacement.category,
+        "selected": False,
+        "courseSelectStartDate": replacement.select_start,
+        "courseSelectEndDate": replacement.select_end,
+        "courseCurrentCount": replacement.current_count,
+        "courseMaxCount": replacement.max_count,
+        "courseSignConfig": replacement.sign_config,
+    }
+    cache = CourseCache(store)
+    cache.save_courses([replacement])
+    cache.save_selected("student", [])
+    cache.save_statistics(
+        "student",
+        {
+            "statistical": {
+                "group": {
+                    "55|德育": {
+                        "assessmentCount": "2",
+                        "selectAssessmentCount": "2",
+                        "completeAssessmentCount": "1",
+                        "failAssessmentCount": "1",
+                        "undoneAssessmentCount": "1",
+                    }
+                }
+            }
+        },
+    )
+
+    runner = GapAwareRunner(
+        store,
+        KitConfig(username="student", max_pending_selected=4),
+    )
+    decisions = runner.scan_once()
+
+    assert AutomationDecision("select", replacement.id, "student") in decisions
+
+
+def test_failed_pass_on_selected_course_triggers_replacement_even_if_stats_lag(
+    tmp_path,
+) -> None:
+    store = AutoBoyaStore(tmp_path)
+    store.init()
+    store.upsert_user(
+        UserRecord(username="student", enabled=True, campus="北京")
+    )
+    now = datetime.now()
+    ended = (now - timedelta(hours=3)).strftime("%Y-%m-%d %H:%M:%S")
+    replacement = make_course(47, autonomous=True, category="德育")
+    replacement.raw = {
+        "id": replacement.id,
+        "courseName": replacement.name,
+        "courseKind": replacement.category,
+        "selected": False,
+        "courseSelectStartDate": replacement.select_start,
+        "courseSelectEndDate": replacement.select_end,
+        "courseCurrentCount": replacement.current_count,
+        "courseMaxCount": replacement.max_count,
+        "courseSignConfig": replacement.sign_config,
+    }
+    cache = CourseCache(store)
+    cache.save_courses([replacement])
+    cache.save_selected(
+        "student",
+        [
+            {
+                "id": 100,
+                "courseName": "Old failed",
+                "courseKind": "德育",
+                "courseEndDate": ended,
+                "pass": 0,
+                "checkin": 0,
+                "selected": True,
+            },
+            {
+                "id": 101,
+                "courseName": "Still pending",
+                "courseKind": "德育",
+                "courseEndDate": (now + timedelta(days=1)).strftime(
+                    "%Y-%m-%d %H:%M:%S"
+                ),
+                "pass": None,
+                "selected": True,
+            },
+        ],
+    )
+    cache.save_statistics(
+        "student",
+        {
+            "statistical": {
+                "group": {
+                    "55|德育": {
+                        "assessmentCount": "2",
+                        "selectAssessmentCount": "2",
+                        "completeAssessmentCount": "0",
+                        "failAssessmentCount": "0",
+                        "undoneAssessmentCount": "2",
+                    }
+                }
+            }
+        },
+    )
+
+    runner = GapAwareRunner(
+        store,
+        KitConfig(username="student", max_pending_selected=4),
+    )
+    decisions = runner.scan_once()
+
+    assert AutomationDecision("select", replacement.id, "student") in decisions
+
+
+def test_legacy_failure_history_does_not_permanently_blacklist_course(
+    tmp_path,
+) -> None:
+    store = AutoBoyaStore(tmp_path)
+    store.init()
+    store.upsert_user(
+        UserRecord(username="student", enabled=True, campus="北京")
+    )
+    course = make_course(46, autonomous=True)
+    course.raw = {
+        "id": course.id,
+        "courseName": course.name,
+        "courseKind": course.category,
+        "selected": False,
+        "courseSelectStartDate": course.select_start,
+        "courseSelectEndDate": course.select_end,
+        "courseCurrentCount": course.current_count,
+        "courseMaxCount": course.max_count,
+        "courseSignConfig": course.sign_config,
+    }
+    cache = CourseCache(store)
+    cache.save_courses([course])
+    cache.save_selected("student", [])
+    store.save_json(
+        "cache/action_journal.json",
+        {"student:select_failed:46": {"attempts": 99, "disabled": True}},
+    )
+    runner = GapAwareRunner(store, KitConfig(username="student"))
+    calls: list[int] = []
+
+    runner._fresh_course_for_selection = (  # type: ignore[method-assign]
+        lambda _username, _course_id: course
+    )
+
+    def fake_select(user: UserRecord, course_id: int) -> ActionResult:
+        calls.append(course_id)
+        return ActionResult(user.username, "select", course_id, True, "selected")
+
+    runner._select_for_user = fake_select  # type: ignore[method-assign]
+    runner.execute_decisions(
+        [AutomationDecision("select", course.id, "student")]
+    )
+
+    assert calls == [course.id]
 
 
 def test_course_assessment_status_mapping() -> None:

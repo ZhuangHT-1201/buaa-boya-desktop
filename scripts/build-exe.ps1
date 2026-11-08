@@ -48,7 +48,10 @@ Write-Host "==> 构建单文件 EXE..."
     --add-data "$Icon;assets" `
     --collect-all autoboya `
     --collect-all keyring `
+    --collect-all ddddocr `
+    --collect-all onnxruntime `
     --hidden-import "keyring.backends.Windows" `
+    --hidden-import "ddddocr" `
     --distpath $ReleaseDir `
     --workpath $WorkDir `
     --specpath $SpecDir `

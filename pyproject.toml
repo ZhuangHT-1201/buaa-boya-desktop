@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "buaa-boya-desktop"
-version = "0.4.1"
+version = "0.5.0"
 description = "A bilingual Windows desktop controller for gap-aware BUAA Boya automation."
 readme = "README.md"
 requires-python = ">=3.10"
@@ -28,6 +28,7 @@ dependencies = [
   "rich>=13",
   "typer>=0.12",
   "Pillow>=10.0",
+  "ddddocr>=1.5.0",
 ]
 
 [project.scripts]

@@ -538,7 +538,15 @@ class AccountStatusDialog(tk.Toplevel):
         available = int(user.get("open_needed_candidate_count", 0))
         full_open = int(user.get("full_needed_candidate_count", 0))
         next_open = user.get("next_needed_candidate_at")
-        if available:
+        live_course_data_ready = bool(
+            user.get("live_course_data_ready", True)
+        )
+        if not live_course_data_ready:
+            candidate_text = app.t(
+                "实时课程数据暂未刷新，自动选课已暂停并等待后台重试。"
+            )
+            candidate_fg = RED
+        elif available:
             candidate_text = app.tf(
                 "当前有 {available} 门符合缺口的自主签到课程可选",
                 available=available,
@@ -1637,7 +1645,8 @@ class BoyaApp(tk.Tk):
 
         self.setting_vars = {
             "poll_seconds": tk.StringVar(),
-            "refresh_seconds": tk.StringVar(),
+            "course_refresh_seconds": tk.StringVar(),
+            "status_refresh_seconds": tk.StringVar(),
             "max_pending_selected": tk.StringVar(),
             "prefer_categories": tk.StringVar(),
             "exclude_categories": tk.StringVar(),
@@ -1655,9 +1664,15 @@ class BoyaApp(tk.Tk):
         )
         self._settings_row(
             form_card,
-            "全量刷新（秒）",
-            "重新获取课程、已选和统计的间隔，建议 300–1800 秒。",
-            self.setting_vars["refresh_seconds"],
+            "课程余量刷新（秒）",
+            "直接读取课程开放状态和剩余名额，建议 20–60 秒。",
+            self.setting_vars["course_refresh_seconds"],
+        )
+        self._settings_row(
+            form_card,
+            "账号状态刷新（秒）",
+            "直接读取已选课程、考核结果和统计，建议 60–300 秒。",
+            self.setting_vars["status_refresh_seconds"],
         )
         self._settings_row(
             form_card,
@@ -2236,7 +2251,12 @@ class BoyaApp(tk.Tk):
 
     def _load_settings_form(self) -> None:
         self.setting_vars["poll_seconds"].set(str(self.kit.poll_seconds))
-        self.setting_vars["refresh_seconds"].set(str(self.kit.refresh_seconds))
+        self.setting_vars["course_refresh_seconds"].set(
+            str(self.kit.course_refresh_seconds)
+        )
+        self.setting_vars["status_refresh_seconds"].set(
+            str(self.kit.status_refresh_seconds)
+        )
         self.setting_vars["max_pending_selected"].set(
             str(self.kit.max_pending_selected)
         )
@@ -2255,12 +2275,23 @@ class BoyaApp(tk.Tk):
     def _save_settings(self) -> None:
         try:
             poll_seconds = int(self.setting_vars["poll_seconds"].get())
-            refresh_seconds = int(self.setting_vars["refresh_seconds"].get())
+            course_refresh_seconds = int(
+                self.setting_vars["course_refresh_seconds"].get()
+            )
+            status_refresh_seconds = int(
+                self.setting_vars["status_refresh_seconds"].get()
+            )
             max_pending = int(self.setting_vars["max_pending_selected"].get())
             if not 10 <= poll_seconds <= 3600:
                 raise ValueError(self.t("巡检间隔应在 10–3600 秒之间"))
-            if not 60 <= refresh_seconds <= 86400:
-                raise ValueError(self.t("全量刷新应在 60–86400 秒之间"))
+            if not 10 <= course_refresh_seconds <= 300:
+                raise ValueError(
+                    self.t("课程余量刷新应在 10–300 秒之间")
+                )
+            if not 30 <= status_refresh_seconds <= 3600:
+                raise ValueError(
+                    self.t("账号状态刷新应在 30–3600 秒之间")
+                )
             if not 1 <= max_pending <= 20:
                 raise ValueError(self.t("单账号最多已选应在 1–20 门之间"))
         except ValueError as exc:
@@ -2283,7 +2314,9 @@ class BoyaApp(tk.Tk):
             ),
             max_pending_selected=max_pending,
             poll_seconds=poll_seconds,
-            refresh_seconds=refresh_seconds,
+            refresh_seconds=self.kit.refresh_seconds,
+            course_refresh_seconds=course_refresh_seconds,
+            status_refresh_seconds=status_refresh_seconds,
             dry_run=self.setting_checks["dry_run"].get(),
         )
         try:
@@ -2296,9 +2329,16 @@ class BoyaApp(tk.Tk):
         self.show_toast(self.t("设置已保存，后台下一轮生效"), "success")
 
     def _worker_captcha_provider(self, challenge: object) -> str:
+        from .captcha_ocr import recognize_captcha_file
+
+        image_path = Path(getattr(challenge, "image_path", "") or "")
+        if image_path:
+            guessed = recognize_captcha_file(image_path)
+            if guessed:
+                return guessed
         event = threading.Event()
         holder: dict[str, str] = {}
-        self.events.put(("captcha", (Path(challenge.image_path), event, holder)))
+        self.events.put(("captcha", (image_path, event, holder)))
         if not event.wait(600):
             raise RuntimeError(translate("等待验证码超时", self.language))
         return holder.get("value", "")
@@ -2447,8 +2487,11 @@ class BoyaApp(tk.Tk):
             "数据更新时间：{time}",
             time=updated_at or self.t("尚未同步"),
         )
+        stale = bool(self.snapshot.get("course_data_stale"))
+        if stale:
+            text += " · " + self.t("实时课程数据暂不可用，后台正在重试")
         for label in self.cache_update_labels:
-            label.configure(text=text)
+            label.configure(text=text, fg=RED if stale else FAINT)
 
     def _prompt_auth_issues(self) -> None:
         blocked = [

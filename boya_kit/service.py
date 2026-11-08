@@ -19,9 +19,11 @@ from autoboya.storage import (
 )
 
 from .account_health import mark_auth_error, mark_auth_ok, mark_auth_required
+from .captcha_ocr import ocr_captcha_provider, recognize_captcha_file
 from .config import PROJECT_ROOT, REFRESH_REQUEST_FILE, RUN_PID_FILE, STOP_FILE
 
 CAPTCHA_REFRESH_SENTINEL = "__CAPTCHA_REFRESH__"
+CAPTCHA_OCR_ATTEMPTS = 3
 
 
 def mask_username(username: str) -> str:
@@ -186,19 +188,24 @@ def login_account(
     username: str,
     password: str,
     captcha_provider: Callable[[object], str] | None = None,
+    *,
+    allow_ocr: bool = True,
 ) -> object:
     last_error: Exception | None = None
     cleanup_captcha_files(store)
-    for attempt in range(1, 4):
+    max_attempts = 4 if allow_ocr else 3
+    for attempt in range(1, max_attempts + 1):
         client = AuthClient(store)
         captcha: str | None = None
+        captcha_path = None
         try:
             try:
                 client.preflight_login()
             except CaptchaRequired as exc:
+                captcha_path = exc.challenge.image_path
                 if not _valid_captcha_image(exc.challenge.image_path):
                     last_error = exc
-                    if attempt < 3:
+                    if attempt < max_attempts:
                         time.sleep(1)
                         continue
                     mark_auth_required(
@@ -208,9 +215,12 @@ def login_account(
                         exc.challenge.image_path,
                     )
                     raise RuntimeError("验证码图片加载失败，请重新登录") from exc
-                if not captcha_provider:
-                    raise RuntimeError("登录需要验证码，请在图形界面中重试") from exc
-                captcha = captcha_provider(exc.challenge).strip()
+                captcha = _resolve_captcha(
+                    exc.challenge,
+                    captcha_provider=captcha_provider,
+                    allow_ocr=allow_ocr,
+                    attempt=attempt,
+                )
                 if captcha == CAPTCHA_REFRESH_SENTINEL:
                     continue
                 if not captcha:
@@ -219,12 +229,28 @@ def login_account(
         except LoginError as exc:
             last_error = exc
             message = str(exc)
-            if attempt < 3 and (
+            if attempt < max_attempts and (
                 "captcha" in message.lower() or "验证码" in message
             ):
                 continue
-            mark_auth_required(store, username, message or "登录失败")
+            mark_auth_required(
+                store,
+                username,
+                message or "登录失败",
+                captcha_path,
+            )
             raise RuntimeError(message or "统一身份认证登录失败") from exc
+        except RuntimeError as exc:
+            last_error = exc
+            message = str(exc)
+            if (
+                allow_ocr
+                and attempt < max_attempts
+                and ("验证码" in message or "captcha" in message.lower())
+            ):
+                continue
+            mark_auth_required(store, username, message, captcha_path)
+            raise
         store.save_json(
             f"sessions/{username}.json",
             {"bykc_token": session.bykc_token, "cookies": session.cookies},
@@ -236,6 +262,28 @@ def login_account(
     message = str(last_error or "登录失败")
     mark_auth_error(store, username, message)
     raise RuntimeError(message)
+
+
+def _resolve_captcha(
+    challenge: object,
+    *,
+    captcha_provider: Callable[[object], str] | None,
+    allow_ocr: bool,
+    attempt: int,
+) -> str:
+    if captcha_provider is not None:
+        return captcha_provider(challenge).strip()
+    if allow_ocr and attempt <= CAPTCHA_OCR_ATTEMPTS:
+        try:
+            return ocr_captcha_provider(challenge).strip()
+        except RuntimeError:
+            image_path = getattr(challenge, "image_path", None)
+            if image_path and recognize_captcha_file(image_path) is None:
+                raise RuntimeError(
+                    "登录需要验证码，自动识别失败，请在图形界面中重试"
+                )
+            raise
+    raise RuntimeError("登录需要验证码，请在图形界面中重试")
 
 
 def _valid_captcha_image(path: Path) -> bool:

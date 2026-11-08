@@ -23,7 +23,9 @@ run unattended course selection, and keep the background runner alive after the 
 ## Highlights
 
 - **Gap-aware selection** — selects autonomous check-in courses only when they help satisfy an
-  category slot that is still unselected (`required - selected`).
+  unfilled category slot. Slots come from Boya statistics plus each chosen course's `pass` /
+  attendance fields (`required - (selected - failed)`), so failed assessments keep triggering
+  replacement selection.
 - **Beijing-campus selection** — automation may select Beijing, Shahe, and all-campus autonomous
   check-in courses. Hangzhou-campus courses are excluded.
 - **Strict autonomous-only selection** — regular-signin courses are rejected both while building the
@@ -38,8 +40,10 @@ run unattended course selection, and keep the background runner alive after the 
   remembered for the next launch.
 - **Visual status and logs** — inspect pending categories, selected courses, account progress, live
   activity, and the background PID without reading terminal output.
-- **Session health monitoring** — automatic reauthentication uses the stored password when possible.
-  CAPTCHA-required accounts are paused, highlighted, and reported instead of blocking the batch.
+- **Session health monitoring** — expired sessions are detected from live Boya/WebVPN responses.
+  Background re-login uses the stored password and local `ddddocr` CAPTCHA recognition (same approach
+  used by common university SSO helpers). Only accounts that still cannot sign in are paused and
+  highlighted, so check-in/out is not blocked by a single CAPTCHA prompt when OCR succeeds.
 - **Dashboard recovery queue** — expired accounts are marked red on the overview, with one
   **Sign in all** action that handles CAPTCHA-protected accounts sequentially.
 - **Per-account status details** — see required, selected, passed, pending, failed, and remaining

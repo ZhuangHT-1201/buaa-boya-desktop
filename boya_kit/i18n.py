@@ -111,6 +111,13 @@ ENGLISH = {
         "No open autonomous check-in course currently matches the remaining gaps. "
         "The background runner will keep polling."
     ),
+    "实时课程数据暂未刷新，自动选课已暂停并等待后台重试。": (
+        "Live course data is temporarily unavailable. Auto-selection is paused "
+        "while the background runner retries."
+    ),
+    "实时课程数据暂不可用，后台正在重试": (
+        "Live course data unavailable; background retry in progress"
+    ),
     "要求": "Required",
     "已通过": "Passed",
     "需选择": "To select",
@@ -187,9 +194,15 @@ ENGLISH = {
     "每次扫描选课与签到窗口的频率，建议 30–120 秒。": (
         "How often to scan selection and attendance windows. 30–120 seconds is recommended."
     ),
-    "全量刷新（秒）": "Full refresh (seconds)",
-    "重新获取课程、已选和统计的间隔，建议 300–1800 秒。": (
-        "How often to reload courses, selections, and statistics. 300–1800 seconds is recommended."
+    "课程余量刷新（秒）": "Live course refresh (seconds)",
+    "直接读取课程开放状态和剩余名额，建议 20–60 秒。": (
+        "Read live course availability and remaining seats directly. "
+        "20–60 seconds is recommended."
+    ),
+    "账号状态刷新（秒）": "Account status refresh (seconds)",
+    "直接读取已选课程、考核结果和统计，建议 60–300 秒。": (
+        "Read selected courses, assessment results, and statistics directly. "
+        "60–300 seconds is recommended."
     ),
     "单账号最多已选": "Max selected per account",
     "机器已选且未结束的课程达到上限后暂停抢新课；人工选课不计入且不会被修改。": (
@@ -343,7 +356,12 @@ ENGLISH = {
     "正在拉取课程、已选和统计…": "Loading courses, selections, and statistics…",
     "数据同步完成": "Data sync complete",
     "巡检间隔应在 10–3600 秒之间": "Poll interval must be between 10 and 3600 seconds.",
-    "全量刷新应在 60–86400 秒之间": "Full refresh must be between 60 and 86400 seconds.",
+    "课程余量刷新应在 10–300 秒之间": (
+        "Live course refresh must be between 10 and 300 seconds."
+    ),
+    "账号状态刷新应在 30–3600 秒之间": (
+        "Account status refresh must be between 30 and 3600 seconds."
+    ),
     "单账号最多已选应在 1–20 门之间": "Max selected per account must be between 1 and 20.",
     "设置格式有误": "Invalid settings",
     "保存失败": "Save failed",

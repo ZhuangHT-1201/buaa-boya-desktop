@@ -37,6 +37,8 @@ exclude_categories:
 max_pending_selected: 4
 poll_seconds: 60
 refresh_seconds: 300
+course_refresh_seconds: 30
+status_refresh_seconds: 60
 dry_run: false
 """
 
@@ -51,6 +53,8 @@ class KitConfig:
     max_pending_selected: int = 4
     poll_seconds: int = 60
     refresh_seconds: int = 300
+    course_refresh_seconds: int = 30
+    status_refresh_seconds: int = 60
     dry_run: bool = False
 
     @classmethod

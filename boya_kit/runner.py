@@ -7,7 +7,16 @@ from datetime import datetime
 from pathlib import Path
 
 from autoboya.cache import CourseCache
-from autoboya.exceptions import CaptchaRequired, LoginError
+from autoboya.exceptions import (
+    AlreadySelected,
+    BoyaApiError,
+    CaptchaRequired,
+    CourseFull,
+    CourseNotOpen,
+    LoginError,
+    SelectionLimitReached,
+    SessionExpired,
+)
 from autoboya.logging import configure_logging, log_event, mask_username
 from autoboya.models import ActionResult, AutomationDecision, BoyaCourse, UserRecord
 from autoboya.rules import (
@@ -15,12 +24,12 @@ from autoboya.rules import (
     in_window,
     is_auto_select_candidate,
     parse_dt,
+    random_point_in_radius,
     sign_window_for,
 )
 from autoboya.scheduler import (
     AutomationRunner,
     is_hangzhou_course,
-    select_failure_attempts,
     user_has_selected,
 )
 from autoboya.storage import AutoBoyaStore
@@ -48,6 +57,7 @@ from .gaps import (
     requirements_met,
     selection_requirements_met,
 )
+from .captcha_ocr import captcha_ocr_available
 from .notify import notify_auth_required
 from .selections import (
     ORIGIN_MACHINE,
@@ -57,9 +67,12 @@ from .selections import (
     origin_for,
     reconcile_selection_origins,
 )
-from .service import cleanup_captcha_files
+from .service import cleanup_captcha_files, login_account, password_for_account
 
 logger = logging.getLogger(__name__)
+
+# Retry OCR/password re-login quickly so check-in is not blocked after session loss.
+AUTO_REAUTH_RETRY_SECONDS = 45
 
 
 class ReauthenticationRequired(RuntimeError):
@@ -72,6 +85,8 @@ class GapAwareRunner(AutomationRunner):
     def __init__(self, store: AutoBoyaStore, kit: KitConfig) -> None:
         super().__init__(store)
         self.kit = kit
+        self._course_catalog_fresh = False
+        self._selection_ready_users: set[str] = set()
 
     def enabled_users(self) -> list[UserRecord]:
         users = [u for u in self.store.user_records() if u.enabled]
@@ -92,7 +107,8 @@ class GapAwareRunner(AutomationRunner):
         refresh_request = self.store.path(REFRESH_REQUEST_FILE)
         if refresh_request.exists():
             refresh_request.unlink()
-        last_refresh = 0.0
+        last_course_refresh = 0.0
+        last_status_refresh = 0.0
         try:
             from .config import DEFAULT_CONFIG_PATH
 
@@ -103,6 +119,16 @@ class GapAwareRunner(AutomationRunner):
         try:
             while not stop.exists():
                 now = time.time()
+                course_seconds = max(10, self.kit.course_refresh_seconds)
+                status_seconds = max(30, self.kit.status_refresh_seconds)
+                scan_seconds = max(
+                    5,
+                    min(
+                        self.kit.poll_seconds,
+                        course_seconds,
+                        status_seconds,
+                    ),
+                )
                 try:
                     try:
                         from .config import DEFAULT_CONFIG_PATH
@@ -111,6 +137,8 @@ class GapAwareRunner(AutomationRunner):
                         if current_mtime != config_mtime:
                             self.kit = load_config()
                             config_mtime = current_mtime
+                            last_course_refresh = 0.0
+                            last_status_refresh = 0.0
                             log_event(logger, logging.INFO, "settings reloaded from config")
                     except OSError:
                         pass
@@ -119,13 +147,16 @@ class GapAwareRunner(AutomationRunner):
                         try:
                             self.refresh_once()
                         except Exception as exc:
+                            self._course_catalog_fresh = False
+                            self._selection_ready_users.clear()
                             log_event(
                                 logger,
                                 logging.ERROR,
                                 "cache refresh failed after account change",
                                 error=exc,
                             )
-                        last_refresh = now
+                        last_course_refresh = now
+                        last_status_refresh = now
                         user_fingerprint = current_users
                         refresh_request.unlink(missing_ok=True)
                         log_event(logger, logging.INFO, "account list changed; caches refreshed")
@@ -133,13 +164,16 @@ class GapAwareRunner(AutomationRunner):
                     if requested_refresh:
                         try:
                             self.refresh_once()
-                            last_refresh = now
+                            last_course_refresh = now
+                            last_status_refresh = now
                             log_event(
                                 logger,
                                 logging.INFO,
                                 "manual cache refresh completed",
                             )
                         except Exception as exc:
+                            self._course_catalog_fresh = False
+                            self._selection_ready_users.clear()
                             log_event(
                                 logger,
                                 logging.ERROR,
@@ -148,19 +182,35 @@ class GapAwareRunner(AutomationRunner):
                             )
                         finally:
                             refresh_request.unlink(missing_ok=True)
-                    if not requested_refresh and now - last_refresh >= self.kit.refresh_seconds:
+                    elif now - last_course_refresh >= course_seconds:
                         try:
-                            self.refresh_once()
+                            self._retry_stored_password_logins()
+                            self.refresh_courses_once()
                         except Exception as exc:
+                            self._course_catalog_fresh = False
                             log_event(
                                 logger,
                                 logging.ERROR,
-                                "periodic cache refresh failed",
+                                "live course refresh failed",
                                 error=exc,
                             )
-                        last_refresh = now
-                        refresh_request.unlink(missing_ok=True)
-                    decisions = self.scan_once()
+                        last_course_refresh = now
+                    if not requested_refresh and now - last_status_refresh >= status_seconds:
+                        try:
+                            self.refresh_user_statuses_once()
+                        except Exception as exc:
+                            self._selection_ready_users.clear()
+                            log_event(
+                                logger,
+                                logging.ERROR,
+                                "account status refresh failed",
+                                error=exc,
+                            )
+                        last_status_refresh = now
+                    decisions = self.scan_once(
+                        allow_selection=self._course_catalog_fresh,
+                        selection_usernames=self._selection_ready_users,
+                    )
                     self.log_heartbeat(decisions)
                     self.execute_decisions(decisions)
                 except Exception as exc:
@@ -168,7 +218,7 @@ class GapAwareRunner(AutomationRunner):
                 _sleep_and_watch_stop(
                     stop,
                     refresh_request,
-                    max(5, self.kit.poll_seconds),
+                    scan_seconds,
                 )
         finally:
             pid = self.store.path(RUN_PID_FILE)
@@ -179,10 +229,17 @@ class GapAwareRunner(AutomationRunner):
         self.store.init()
         self.store.path(STOP_FILE).write_text(datetime.now().isoformat(), encoding="utf-8")
 
-    def refresh_once(self) -> None:
+    def refresh_once(self) -> bool:
+        self._retry_stored_password_logins()
+        courses_fresh = self.refresh_courses_once()
+        self.refresh_user_statuses_once()
+        return courses_fresh
+
+    def refresh_courses_once(self) -> bool:
         users = self.enabled_users()
         if not users:
-            return
+            self._course_catalog_fresh = False
+            return False
         import random
 
         health = load_account_health(self.store)
@@ -192,12 +249,11 @@ class GapAwareRunner(AutomationRunner):
             if health.get(user.username, {}).get("status") != STATUS_AUTH_REQUIRED
         ]
         random.shuffle(pool_candidates)
-        courses_refreshed = False
         for pool_user in pool_candidates:
             try:
-                _config, courses = self._with_reauth(
+                courses = self._with_reauth(
                     pool_user.username,
-                    lambda client: (client.get_all_config(), client.query_courses()),
+                    lambda client: client.query_courses(page_size=200),
                     retry_attempts=3,
                 )
             except ReauthenticationRequired:
@@ -212,15 +268,25 @@ class GapAwareRunner(AutomationRunner):
                 )
                 continue
             self.cache.save_courses(courses)
-            courses_refreshed = True
-            break
-        if not courses_refreshed:
+            self._course_catalog_fresh = True
             log_event(
                 logger,
-                logging.WARNING,
-                "course pool could not be refreshed; using cached catalog",
+                logging.INFO,
+                "live course catalog refreshed",
+                course_count=len(courses),
             )
+            return True
+        self._course_catalog_fresh = False
+        log_event(
+            logger,
+            logging.WARNING,
+            "live course catalog unavailable; auto-select paused",
+        )
+        return False
 
+    def refresh_user_statuses_once(self) -> set[str]:
+        users = self.enabled_users()
+        ready: set[str] = set()
         for user in users:
             if account_health(self.store, user.username).get("status") == STATUS_AUTH_REQUIRED:
                 continue
@@ -244,10 +310,68 @@ class GapAwareRunner(AutomationRunner):
                 continue
             self.cache.save_selected(user.username, selected)
             self.cache.save_statistics(user.username, statistics)
+            ready.add(user.username)
         reconcile_selection_origins(
             self.store,
             self._selected_by_user(self.cache.load_selected()),
         )
+        self._selection_ready_users = ready
+        return ready
+
+    def _retry_stored_password_logins(self) -> None:
+        now = datetime.now()
+        for user in self.enabled_users():
+            health = account_health(self.store, user.username)
+            if health.get("status") != STATUS_AUTH_REQUIRED:
+                continue
+            try:
+                updated_at = datetime.fromisoformat(
+                    str(health.get("updated_at") or "")
+                )
+            except ValueError:
+                updated_at = datetime.min
+            if (now - updated_at).total_seconds() < AUTO_REAUTH_RETRY_SECONDS:
+                continue
+            if self._auto_relogin(user.username):
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "stored-password reauthentication succeeded",
+                    user=mask_username(user.username),
+                    ocr=captcha_ocr_available(),
+                )
+            else:
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "stored-password reauthentication still requires attention",
+                    user=mask_username(user.username),
+                    error=account_health(self.store, user.username).get("error"),
+                )
+
+    def _auto_relogin(self, username: str) -> bool:
+        """Re-login with stored password and local captcha OCR when needed."""
+        try:
+            password = password_for_account(self.store, username)
+            login_account(
+                self.store,
+                username,
+                password,
+                allow_ocr=True,
+            )
+            return True
+        except Exception as exc:
+            captcha_path = None
+            challenge_path = getattr(getattr(exc, "challenge", None), "image_path", None)
+            if challenge_path:
+                captcha_path = challenge_path
+            else:
+                health = account_health(self.store, username)
+                raw_path = health.get("captcha_path")
+                captcha_path = Path(raw_path) if raw_path else None
+            mark_auth_required(self.store, username, str(exc), captcha_path)
+            notify_auth_required(username)
+            return False
 
     def _query_user_status(self, client):
         from autoboya.scheduler import current_semester_window
@@ -264,7 +388,12 @@ class GapAwareRunner(AutomationRunner):
         selected = client.query_chosen_courses(start, end)
         return selected, statistics
 
-    def scan_once(self) -> list[AutomationDecision]:
+    def scan_once(
+        self,
+        *,
+        allow_selection: bool = True,
+        selection_usernames: set[str] | None = None,
+    ) -> list[AutomationDecision]:
         now = datetime.now()
         courses = self.cache.parsed_courses()
         selected_by_user = self._selected_by_user(self.cache.load_selected())
@@ -274,6 +403,7 @@ class GapAwareRunner(AutomationRunner):
 
         decisions: list[AutomationDecision] = []
 
+        selected_raw = self.cache.load_selected()
         for user in users:
             if (
                 account_health(self.store, user.username).get("status")
@@ -282,6 +412,13 @@ class GapAwareRunner(AutomationRunner):
                 continue
             stats = stats_all.get(user.username, {}) if isinstance(stats_all, dict) else {}
             selected = selected_by_user.get(user.username, [])
+            selected_items = (
+                selected_raw.get(user.username, [])
+                if isinstance(selected_raw, dict)
+                else []
+            )
+            if not isinstance(selected_items, list):
+                selected_items = []
             pending = [c for c in selected if _is_pending(c, now)]
             machine_pending = [
                 course
@@ -298,9 +435,23 @@ class GapAwareRunner(AutomationRunner):
                 if sign_window_for(course, 2, now):
                     decisions.append(AutomationDecision(action="signout", course_id=course.id, username=user.username))
 
+            if not allow_selection or (
+                selection_usernames is not None
+                and user.username not in selection_usernames
+            ):
+                log_event(
+                    logger,
+                    logging.WARNING,
+                    "auto-select paused until live account data is available",
+                    user=mask_username(user.username),
+                )
+                continue
+
             if selection_requirements_met(
                 stats,
                 exclude=self.kit.exclude_categories,
+                selected_items=selected_items,
+                now=now,
             ):
                 log_event(
                     logger,
@@ -321,7 +472,12 @@ class GapAwareRunner(AutomationRunner):
                 )
                 continue
 
-            needed = needed_categories(stats, exclude=self.kit.exclude_categories)
+            needed = needed_categories(
+                stats,
+                exclude=self.kit.exclude_categories,
+                selected_items=selected_items,
+                now=now,
+            )
             if self.kit.only_gap_categories and not needed:
                 log_event(
                     logger,
@@ -342,6 +498,14 @@ class GapAwareRunner(AutomationRunner):
             candidates.sort(
                 key=lambda c: (
                     prefer_sort_key(c.category, self.kit.prefer_categories),
+                    # Prefer courses with remaining seats first when live counts exist.
+                    0
+                    if (
+                        c.current_count is not None
+                        and c.max_count is not None
+                        and c.current_count < c.max_count
+                    )
+                    else 1,
                     c.select_end or "",
                     c.id,
                 )
@@ -377,7 +541,7 @@ class GapAwareRunner(AutomationRunner):
         selected_by_user = self._selected_by_user(selected_raw)
         courses_by_id = {course.id: course for course in self.cache.parsed_courses()}
         from autoboya.config import ACTION_JOURNAL_FILE
-        from autoboya.scheduler import SELECT_FAILURE_LIMIT, journal_key, select_failure_key, record_select_failure
+        from autoboya.scheduler import journal_key
 
         journal = self.store.load_json(ACTION_JOURNAL_FILE, {})
         users_by_name = {u.username: u for u in self.enabled_users()}
@@ -401,32 +565,61 @@ class GapAwareRunner(AutomationRunner):
                         category=course.category,
                     )
                     continue
+                try:
+                    fresh_course = self._fresh_course_for_selection(
+                        username,
+                        decision.course_id,
+                    )
+                except ReauthenticationRequired:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "auto-select paused because account requires sign-in",
+                        user=mask_username(username),
+                        course_id=decision.course_id,
+                    )
+                    continue
+                except Exception as exc:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "could not verify live course before selection",
+                        user=mask_username(username),
+                        course_id=decision.course_id,
+                        error=exc,
+                    )
+                    continue
+                course = fresh_course
+                if not is_machine_selectable_course(course, now):
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "live course is no longer selectable",
+                        user=mask_username(username),
+                        course_id=decision.course_id,
+                    )
+                    continue
                 if user_has_selected(selected_by_user, username, decision.course_id):
                     continue
                 key = journal_key(username, "select", decision.course_id)
                 if journal.get(key):
                     continue
-                if select_failure_attempts(journal, username, decision.course_id) >= SELECT_FAILURE_LIMIT:
-                    continue
                 result = self._select_for_user(user, decision.course_id)
                 results.append(result)
                 if result.ok:
                     journal[key] = result.message
-                    journal.pop(select_failure_key(username, decision.course_id), None)
                     mark_machine_selection(
                         self.store,
                         username,
                         course,
                     )
                 elif result.terminal:
-                    attempts = record_select_failure(journal, username, decision.course_id, result.message)
                     log_event(
                         logger,
                         logging.WARNING,
                         "auto select failed",
                         user=mask_username(username),
                         course_id=decision.course_id,
-                        attempts=attempts,
                         reason=result.message,
                     )
                 continue
@@ -448,17 +641,171 @@ class GapAwareRunner(AutomationRunner):
         self.store.save_json(ACTION_JOURNAL_FILE, journal)
         return results
 
+    def _fresh_course_for_selection(
+        self,
+        username: str,
+        course_id: int,
+    ) -> BoyaCourse:
+        return self._with_reauth(
+            username,
+            lambda client: client.query_course_detail(course_id),
+        )
+
+    def _select_for_user(self, user: UserRecord, course_id: int) -> ActionResult:
+        try:
+            self._with_reauth(
+                user.username,
+                lambda client: client.select_course(course_id),
+            )
+        except BoyaApiError as exc:
+            return ActionResult(
+                user.username,
+                "select",
+                course_id,
+                False,
+                str(exc),
+            )
+        except (AlreadySelected, CourseFull, CourseNotOpen, SelectionLimitReached) as exc:
+            return ActionResult(
+                user.username,
+                "select",
+                course_id,
+                False,
+                str(exc),
+            )
+        except Exception as exc:
+            return ActionResult(
+                user.username,
+                "select",
+                course_id,
+                False,
+                str(exc),
+            )
+
+        try:
+            self._refresh_user_cache(user.username)
+        except Exception as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "course selected but post-selection status refresh failed",
+                user=mask_username(user.username),
+                course_id=course_id,
+                error=exc,
+            )
+        return ActionResult(
+            user.username,
+            "select",
+            course_id,
+            True,
+            "selected",
+        )
+
+    def _sign_for_user(
+        self,
+        username: str,
+        course: BoyaCourse | None,
+        action: str,
+    ) -> ActionResult:
+        if not course or not course.sign_config.get("signPointList"):
+            return ActionResult(
+                username,
+                action,
+                course.id if course else 0,
+                False,
+                "missing sign point",
+            )
+        point = course.sign_config["signPointList"][-1]
+        lat, lng = random_point_in_radius(
+            float(point["lat"]),
+            float(point["lng"]),
+            float(point.get("radius") or 8),
+        )
+        sign_type = 1 if action == "sign" else 2
+        try:
+            self._with_reauth(
+                username,
+                lambda client: client.sign_course(
+                    course.id,
+                    lat,
+                    lng,
+                    sign_type,
+                ),
+            )
+        except Exception as exc:
+            return ActionResult(
+                username,
+                action,
+                course.id,
+                False,
+                str(exc),
+            )
+
+        try:
+            self._refresh_user_cache(username)
+        except Exception as exc:
+            log_event(
+                logger,
+                logging.WARNING,
+                "attendance succeeded but post-action status refresh failed",
+                user=mask_username(username),
+                course_id=course.id,
+                action=action,
+                error=exc,
+            )
+        return ActionResult(
+            username,
+            action,
+            course.id,
+            True,
+            "signed",
+        )
+
     def _with_reauth(self, username: str, operation, retry_attempts: int = 1):
+        from autoboya.session import ensure_bykc_client
+
         current_health = account_health(self.store, username)
         if current_health.get("status") == STATUS_AUTH_REQUIRED:
-            raise ReauthenticationRequired(
-                current_health.get("error") or "account requires interactive login"
-            )
+            try:
+                updated_at = datetime.fromisoformat(
+                    str(current_health.get("updated_at") or "")
+                )
+            except ValueError:
+                updated_at = datetime.min
+            age = (datetime.now() - updated_at).total_seconds()
+            if age < AUTO_REAUTH_RETRY_SECONDS or not self._auto_relogin(username):
+                raise ReauthenticationRequired(
+                    current_health.get("error")
+                    or account_health(self.store, username).get("error")
+                    or "account requires interactive login"
+                )
+
         for attempt in range(1, retry_attempts + 1):
             try:
-                result = super()._with_reauth(username, operation)
+                client = ensure_bykc_client(self.store, username)
+                try:
+                    result = operation(client)
+                except SessionExpired:
+                    log_event(
+                        logger,
+                        logging.WARNING,
+                        "session expired; attempting OCR-assisted re-login",
+                        user=mask_username(username),
+                    )
+                    if not self._auto_relogin(username):
+                        detail = (
+                            account_health(self.store, username).get("error")
+                            or "session expired; captcha login required"
+                        )
+                        raise ReauthenticationRequired(detail)
+                    client = ensure_bykc_client(self.store, username)
+                    result = operation(client)
+            except ReauthenticationRequired:
+                raise
             except CaptchaRequired as exc:
                 detail = str(exc) or "CAPTCHA required"
+                if self._auto_relogin(username):
+                    continue
                 capture_path = getattr(
                     getattr(exc, "challenge", None),
                     "image_path",
@@ -474,6 +821,8 @@ class GapAwareRunner(AutomationRunner):
                 raise ReauthenticationRequired(detail) from exc
             except LoginError as exc:
                 detail = str(exc) or "unified authentication login failed"
+                if self._auto_relogin(username):
+                    continue
                 mark_auth_required(self.store, username, detail)
                 notify_auth_required(username)
                 raise ReauthenticationRequired(detail) from exc
@@ -493,6 +842,7 @@ class GapAwareRunner(AutomationRunner):
             else:
                 mark_auth_ok(self.store, username)
                 return result
+        raise RuntimeError("account request failed after retries")
 
 
 def _attach_kit_file_logger(path: Path) -> None:
@@ -563,6 +913,32 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
     if kit.username:
         users = [u for u in users if u.username == kit.username]
 
+    def modified_at(relative: str) -> str | None:
+        path = store.path(relative)
+        try:
+            return datetime.fromtimestamp(path.stat().st_mtime).strftime(
+                "%Y-%m-%d %H:%M:%S"
+            )
+        except OSError:
+            return None
+
+    def cache_age(relative: str) -> float:
+        try:
+            return max(0.0, time.time() - store.path(relative).stat().st_mtime)
+        except OSError:
+            return float("inf")
+
+    course_age_seconds = cache_age("cache/courses.json")
+    status_age_seconds = cache_age("cache/statistics.json")
+    courses_stale = course_age_seconds > max(
+        120,
+        kit.course_refresh_seconds * 3,
+    )
+    statuses_stale = status_age_seconds > max(
+        180,
+        kit.status_refresh_seconds * 3,
+    )
+
     from autoboya.bykc import parse_course
 
     out_users = []
@@ -574,11 +950,13 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
         )
         stats = stats_all.get(user.username, {}) if isinstance(stats_all, dict) else {}
         selected_items = selected_raw.get(user.username, []) if isinstance(selected_raw, dict) else []
-        selected_pairs = (
-            [(item, parse_course(item)) for item in selected_items]
-            if isinstance(selected_items, list)
-            else []
-        )
+        if not isinstance(selected_items, list):
+            selected_items = []
+        selected_pairs = [
+            (item, parse_course(item))
+            for item in selected_items
+            if isinstance(item, dict)
+        ]
         selected = [course for _item, course in selected_pairs]
         selected_rows = []
         now = datetime.now()
@@ -596,14 +974,20 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
                     "assessment_status": assessment_status,
                     "pass": item.get("pass"),
                     "score": item.get("score"),
+                    "checkin": item.get("checkin"),
                     "selected_at": item.get("selectDate"),
                     "start": course.course_start,
                     "end": course.course_end,
                     "location": course.location,
                 }
             )
-        gaps = gaps_payload(stats)
-        needed = needed_categories(stats, exclude=kit.exclude_categories)
+        gaps = gaps_payload(stats, selected_items=selected_items, now=now)
+        needed = needed_categories(
+            stats,
+            exclude=kit.exclude_categories,
+            selected_items=selected_items,
+            now=now,
+        )
         selected_ids = {course.id for course in selected}
         candidate_status = _candidate_diagnostics(
             courses,
@@ -611,6 +995,16 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
             needed,
             now,
         )
+        if courses_stale:
+            candidate_status = {
+                "open_needed_candidate_count": 0,
+                "full_needed_candidate_count": 0,
+                "next_needed_candidate_at": None,
+                "upcoming_candidates": [],
+                "live_course_data_ready": False,
+            }
+        else:
+            candidate_status["live_course_data_ready"] = True
         out_users.append(
             {
                 "username": user.username,
@@ -619,7 +1013,12 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
                 "auth_error": health.get("error"),
                 "captcha_path": health.get("captcha_path"),
                 "last_auth_success_at": health.get("last_success_at"),
-                "requirements_met": requirements_met(stats, exclude=kit.exclude_categories),
+                "requirements_met": requirements_met(
+                    stats,
+                    exclude=kit.exclude_categories,
+                    selected_items=selected_items,
+                    now=now,
+                ),
                 "needed_categories": needed,
                 "gaps": gaps,
                 "valid_count": stats.get("validCount") if isinstance(stats, dict) else None,
@@ -660,14 +1059,6 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
                 "selected": selected_rows,
             }
         )
-    def modified_at(relative: str) -> str | None:
-        path = store.path(relative)
-        try:
-            return datetime.fromtimestamp(path.stat().st_mtime).strftime(
-                "%Y-%m-%d %H:%M:%S"
-            )
-        except OSError:
-            return None
 
     return {
         "users": out_users,
@@ -675,6 +1066,10 @@ def status_payload(store: AutoBoyaStore, kit: KitConfig) -> dict:
         "only_gap_categories": kit.only_gap_categories,
         "status_updated_at": modified_at("cache/statistics.json"),
         "courses_updated_at": modified_at("cache/courses.json"),
+        "course_data_stale": courses_stale,
+        "status_data_stale": statuses_stale,
+        "course_data_age_seconds": course_age_seconds,
+        "status_data_age_seconds": status_age_seconds,
     }
 
 
@@ -683,13 +1078,19 @@ def _course_assessment_status(
     course: BoyaCourse,
     now: datetime,
 ) -> str:
-    pass_value = item.get("pass")
-    if pass_value is True or str(pass_value) == "1":
+    from .gaps import course_assessment_outcome
+
+    outcome = course_assessment_outcome(
+        item,
+        now,
+        course_end=course.course_end,
+    )
+    if outcome == "passed":
         return "passed"
+    if outcome == "failed":
+        return "not_passed"
     end = parse_dt(course.course_end)
     finished = end is not None and end < now
-    if pass_value is False or str(pass_value) == "0":
-        return "not_passed" if finished else "pending"
     return "pending_result" if finished else "pending"
 
 

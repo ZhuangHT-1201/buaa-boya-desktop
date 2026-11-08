@@ -27,9 +27,12 @@ exclude_categories:
 # 每账号机器已选未结束课程上限；人工选课不计入且不会被修改。
 max_pending_selected: 4
 
-# Poll and full-refresh intervals in seconds / 轮询与全量刷新间隔（秒）
+# Decision scan, live course availability, and direct account-status intervals.
+# 决策扫描、实时课程余量和账号状态刷新间隔（秒）。
 poll_seconds: 60
 refresh_seconds: 300
+course_refresh_seconds: 30
+status_refresh_seconds: 60
 
 # true = log decisions without real operations / 测试模式
 dry_run: false

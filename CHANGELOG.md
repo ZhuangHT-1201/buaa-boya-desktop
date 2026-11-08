@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.0
+
+- Background re-login now uses local `ddddocr` to read SSO CAPTCHA images and restore expired
+  sessions automatically, so check-in/out is less likely to stop after a successful selection.
+- Category gaps reconcile Boya statistics with each chosen course's `pass` / check-in fields, so
+  failed assessments continue to trigger replacement selection.
+- Live course availability and account status refresh on separate intervals, and selection prefers
+  courses that still have remaining seats.
+
 ## 0.4.1
 
 - Added a prominent Overview warning for accounts that require interactive sign-in.
