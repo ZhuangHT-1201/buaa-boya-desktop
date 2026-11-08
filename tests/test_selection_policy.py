@@ -449,6 +449,77 @@ def test_scan_selects_only_the_remaining_category_quota(tmp_path) -> None:
     assert len(selections) == 1
 
 
+def test_stale_full_course_is_selected_only_after_live_revalidation(
+    tmp_path,
+) -> None:
+    store = AutoBoyaStore(tmp_path)
+    store.init()
+    store.upsert_user(
+        UserRecord(username="student", enabled=True, campus="北京")
+    )
+    cached = make_course(
+        49,
+        autonomous=True,
+        category="德育",
+        current_count=20,
+        max_count=20,
+    )
+    cached.raw = {
+        "id": cached.id,
+        "courseName": cached.name,
+        "courseKind": cached.category,
+        "selected": False,
+        "courseSelectStartDate": cached.select_start,
+        "courseSelectEndDate": cached.select_end,
+        "courseCurrentCount": 20,
+        "courseMaxCount": 20,
+        "courseSignConfig": cached.sign_config,
+    }
+    cache = CourseCache(store)
+    cache.save_courses([cached])
+    cache.save_selected("student", [])
+    cache.save_statistics(
+        "student",
+        {
+            "statistical": {
+                "group": {
+                    "55|德育": {
+                        "assessmentCount": "1",
+                        "selectAssessmentCount": "0",
+                        "completeAssessmentCount": "0",
+                        "failAssessmentCount": "0",
+                        "undoneAssessmentCount": "0",
+                    }
+                }
+            }
+        },
+    )
+    runner = GapAwareRunner(store, KitConfig(username="student"))
+    decisions = runner.scan_once(allow_stale_capacity=True)
+    assert AutomationDecision("select", cached.id, "student") in decisions
+
+    fresh = make_course(
+        49,
+        autonomous=True,
+        category="德育",
+        current_count=0,
+        max_count=20,
+    )
+    runner._fresh_course_for_selection = (  # type: ignore[method-assign]
+        lambda _username, _course_id: fresh
+    )
+    selected: list[int] = []
+
+    def fake_select(user: UserRecord, course_id: int) -> ActionResult:
+        selected.append(course_id)
+        return ActionResult(user.username, "select", course_id, True, "selected")
+
+    runner._select_for_user = fake_select  # type: ignore[method-assign]
+    runner.execute_decisions(decisions)
+
+    assert selected == [cached.id]
+
+
 def test_legacy_failure_history_does_not_permanently_blacklist_course(
     tmp_path,
 ) -> None:

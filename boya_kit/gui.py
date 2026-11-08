@@ -543,7 +543,7 @@ class AccountStatusDialog(tk.Toplevel):
         )
         if not live_course_data_ready:
             candidate_text = app.t(
-                "实时课程数据暂未刷新，自动选课已暂停并等待后台重试。"
+                "实时课程目录暂未刷新；自动选课会使用缓存候选逐门实时复核。"
             )
             candidate_fg = RED
         elif available:
@@ -2483,7 +2483,9 @@ class BoyaApp(tk.Tk):
         )
         stale = bool(self.snapshot.get("course_data_stale"))
         if stale:
-            text += " · " + self.t("实时课程数据暂不可用，后台正在重试")
+            text += " · " + self.t(
+                "实时课程目录读取中；当前使用缓存候选并逐门复核"
+            )
         for label in self.cache_update_labels:
             label.configure(text=text, fg=RED if stale else FAINT)
 

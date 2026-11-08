@@ -111,12 +111,12 @@ ENGLISH = {
         "No open autonomous check-in course currently matches the remaining gaps. "
         "The background runner will keep polling."
     ),
-    "实时课程数据暂未刷新，自动选课已暂停并等待后台重试。": (
-        "Live course data is temporarily unavailable. Auto-selection is paused "
-        "while the background runner retries."
+    "实时课程目录暂未刷新；自动选课会使用缓存候选逐门实时复核。": (
+        "The live course catalog is temporarily unavailable. Auto-selection uses "
+        "cached candidates and revalidates each course live before selecting it."
     ),
-    "实时课程数据暂不可用，后台正在重试": (
-        "Live course data unavailable; background retry in progress"
+    "实时课程目录读取中；当前使用缓存候选并逐门复核": (
+        "Live catalog pending; cached candidates are being revalidated"
     ),
     "要求": "Required",
     "已通过": "Passed",

@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.5.2
+
+- Keeps safe auto-selection available when the large course-catalog endpoint times out by using
+  recent cached candidates and validating each candidate through the live course-detail endpoint.
+- Allows courses cached as full to be reconsidered after an external course drop, while still
+  blocking regular-signin, Hangzhou, closed, and genuinely full courses.
+- Updates the UI to explain that cached candidates are being live-revalidated instead of claiming
+  auto-selection is paused.
+
 ## 0.5.1
 
 - Refreshes account statuses concurrently and reads the shared course catalog from one recent healthy
@@ -9,6 +18,8 @@
 - Reduces Boya data-read timeouts and records the next refresh schedule after each completed attempt.
 - Coalesces a manual refresh request with any full refresh already completed in the current cycle,
   preventing users from waiting through a duplicate refresh.
+- When the large course-catalog endpoint times out, recent cached candidates are allowed only after
+  a live per-course detail check confirms availability and autonomous check-in eligibility.
 - Serializes `ddddocr` model inference so simultaneous account recovery cannot corrupt or crash the
   shared OCR engine.
 - Removes duplicate reauthentication warnings when OCR fails and keeps manual CAPTCHA fallback in

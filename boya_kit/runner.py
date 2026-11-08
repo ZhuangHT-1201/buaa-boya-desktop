@@ -249,8 +249,10 @@ class GapAwareRunner(AutomationRunner):
                         status_attempted = True
                         last_status_refresh = time.time()
                     decisions = self.scan_once(
-                        allow_selection=self._course_catalog_fresh,
+                        allow_selection=bool(self._selection_ready_users)
+                        and _course_cache_age(self.store) <= 86400,
                         selection_usernames=self._selection_ready_users,
+                        allow_stale_capacity=not self._course_catalog_fresh,
                     )
                     self.log_heartbeat(decisions)
                     self.execute_decisions(decisions)
@@ -346,7 +348,7 @@ class GapAwareRunner(AutomationRunner):
         log_event(
             logger,
             logging.WARNING,
-            "live course catalog unavailable; auto-select paused",
+            "live course catalog unavailable; cached candidates require live validation",
         )
         return False
 
@@ -518,6 +520,7 @@ class GapAwareRunner(AutomationRunner):
         *,
         allow_selection: bool = True,
         selection_usernames: set[str] | None = None,
+        allow_stale_capacity: bool = False,
     ) -> list[AutomationDecision]:
         now = datetime.now()
         courses = self.cache.parsed_courses()
@@ -608,7 +611,14 @@ class GapAwareRunner(AutomationRunner):
             candidates = [
                 course
                 for course in courses
-                if is_machine_selectable_course(course, now)
+                if (
+                    is_machine_selectable_course(course, now)
+                    or (
+                        allow_stale_capacity
+                        and is_machine_course_shape(course)
+                        and in_window(course.select_start, course.select_end, now)
+                    )
+                )
                 and course.category not in self.kit.exclude_categories
                 and (
                     not self.kit.only_gap_categories
@@ -685,7 +695,11 @@ class GapAwareRunner(AutomationRunner):
                 course = courses_by_id.get(decision.course_id)
                 if course is None:
                     continue
-                if not is_machine_selectable_course(course, now):
+                if not is_machine_course_shape(course) or not in_window(
+                    course.select_start,
+                    course.select_end,
+                    now,
+                ):
                     log_event(
                         logger,
                         logging.WARNING,
@@ -1014,6 +1028,16 @@ def _auth_retry_due(
     return (now - updated_at).total_seconds() >= AUTO_REAUTH_RETRY_SECONDS
 
 
+def _course_cache_age(store: AutoBoyaStore) -> float:
+    try:
+        return max(
+            0.0,
+            time.time() - store.path("cache/courses.json").stat().st_mtime,
+        )
+    except OSError:
+        return float("inf")
+
+
 def _has_stored_session(store: AutoBoyaStore, username: str) -> bool:
     session = store.load_json(f"sessions/{username}.json", {})
     if not isinstance(session, dict):
@@ -1044,14 +1068,19 @@ def _attach_kit_file_logger(path: Path) -> None:
 
 def is_machine_selectable_course(course: BoyaCourse, now: datetime) -> bool:
     """Machine selection is strictly limited to currently selectable check-in courses."""
+    return is_machine_course_shape(course) and is_auto_select_candidate(
+        course,
+        now,
+        ignore_selected=True,
+    )
+
+
+def is_machine_course_shape(course: BoyaCourse) -> bool:
+    """Static course properties required for an automated selection."""
     return (
         not is_hangzhou_course(course)
         and has_autonomous_sign(course)
-        and is_auto_select_candidate(
-            course,
-            now,
-            ignore_selected=True,
-        )
+        and course.category != "其他方面"
     )
 
 
