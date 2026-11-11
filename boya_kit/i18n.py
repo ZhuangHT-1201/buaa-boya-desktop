@@ -147,6 +147,7 @@ ENGLISH = {
     "需重新登录": "Sign in required",
     "需验证码登录": "Captcha required",
     "登录异常": "Sign-in error",
+    "请求异常": "Request error",
     "需要重新登录": "Sign-in required",
     "{count} 个账号需要重新登录": "{count} account(s) need to sign in again",
     "{accounts} · 验证码会逐个弹出，完成一个后自动继续下一个": (

@@ -26,6 +26,7 @@ from .config import (
 )
 from .i18n import format_text, translate
 from .runner import GapAwareRunner, status_payload
+from .runtime import ensure_persistent_ca_bundle
 from .service import (
     CAPTCHA_REFRESH_SENTINEL,
     autostart_enabled,
@@ -918,6 +919,7 @@ class BoyaApp(tk.Tk):
         self.events: queue.Queue[tuple[str, object]] = queue.Queue()
         self.store = AutoBoyaStore()
         self.store.init()
+        ensure_persistent_ca_bundle(self.store)
         preferences = self.store.load_json("ui-preferences.json", {})
         self.language = (
             preferences.get("language", "zh")
@@ -2827,7 +2829,7 @@ class BoyaApp(tk.Tk):
             ):
                 login_text = "需重新登录"
             elif auth_status == "error":
-                login_text = "登录异常"
+                login_text = "请求异常"
             else:
                 login_text = "已登录"
             self.account_tree.insert(

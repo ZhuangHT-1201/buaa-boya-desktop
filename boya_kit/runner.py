@@ -64,6 +64,7 @@ from .gaps import (
 from .captcha_ocr import captcha_ocr_available
 from .locking import LockUnavailable, file_lock
 from .notify import notify_auth_required
+from .runtime import ensure_persistent_ca_bundle
 from .selections import (
     ORIGIN_MACHINE,
     ORIGIN_MANUAL,
@@ -84,6 +85,30 @@ logger = logging.getLogger(__name__)
 # Retry OCR/password re-login quickly so check-in is not blocked after session loss.
 AUTO_REAUTH_RETRY_SECONDS = 45
 AUTO_REAUTH_MAX_BACKOFF_SECONDS = 1800
+
+
+class SafeRotatingFileHandler(RotatingFileHandler):
+    """Continue logging if another reader temporarily blocks Windows rollover."""
+
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        self._next_rollover_attempt = 0.0
+
+    def shouldRollover(self, record: logging.LogRecord) -> bool:
+        if time.monotonic() < self._next_rollover_attempt:
+            return False
+        return super().shouldRollover(record)
+
+    def doRollover(self) -> None:
+        try:
+            super().doRollover()
+        except OSError:
+            self._next_rollover_attempt = time.monotonic() + 300
+            if self.stream is None:
+                try:
+                    self.stream = self._open()
+                except OSError:
+                    pass
 
 
 class ReauthenticationRequired(RuntimeError):
@@ -119,6 +144,7 @@ class GapAwareRunner(AutomationRunner):
 
     def _run_forever_locked(self) -> None:
         self.store.init()
+        ensure_persistent_ca_bundle(self.store)
         cleanup_captcha_files(self.store)
         configure_logging(self.store, console=False)
         _attach_kit_file_logger(self.store.path(LOG_FILE))
@@ -1054,9 +1080,11 @@ def _attach_kit_file_logger(path: Path) -> None:
     for handler in root.handlers:
         if isinstance(handler, logging.FileHandler):
             existing = getattr(handler, "baseFilename", None)
-            if existing and str(Path(existing).resolve()) == target:
+            if existing and os.path.normcase(
+                os.path.abspath(existing)
+            ) == os.path.normcase(target):
                 return
-    handler = RotatingFileHandler(
+    handler = SafeRotatingFileHandler(
         path,
         maxBytes=5 * 1024 * 1024,
         backupCount=3,

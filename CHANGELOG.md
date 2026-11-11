@@ -1,5 +1,18 @@
 # Changelog
 
+## 0.5.3
+
+- Persistently copies the packaged CA certificate bundle into the user data directory and exports
+  standard SSL environment variables, preventing HTTPS failures after PyInstaller's temporary
+  extraction directory disappears.
+- Applies the persistent certificate setup to the GUI, worker login, and all automatic
+  reauthentication paths.
+- Replaces the Windows-unsafe rotating log handler with a retryable handler that suppresses log
+  rollover exceptions when another process is reading the file.
+- Prevents log-rotation errors from filling the log and hiding actual authentication failures.
+- Displays transient network/API failures as **Request error** instead of the misleading
+  **Sign-in error** label.
+
 ## 0.5.2
 
 - Keeps safe auto-selection available when the large course-catalog endpoint times out by using

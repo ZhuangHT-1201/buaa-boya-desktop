@@ -59,6 +59,8 @@ If that live check cannot be completed, nothing is selected from stale capacity 
 - A worker-instance lock prevents duplicate background runners.
 - A per-account login lock prevents the desktop console and worker from competing for the same
   SSO session.
+- The packaged CA certificate bundle is copied to a persistent user-data path so long-running
+  workers can continue creating HTTPS clients after the one-file extraction directory disappears.
 - Expired sessions are reauthenticated with the locally stored password when no CAPTCHA is needed.
 - CAPTCHA OCR is attempted with a bundled local `ddddocr` runtime.
 - In the desktop app, the first CAPTCHA attempt uses OCR and immediately falls back to a manual
@@ -103,7 +105,7 @@ needed.
 | **Signed in** | The account can currently use its stored session. |
 | **Sign in required** | The session is missing or expired. |
 | **Captcha required** | Interactive sign-in may be needed if automatic OCR cannot complete. |
-| **Sign-in error** | A network or API error occurred; the next cycle retries automatically. |
+| **Request error** | A network or API error occurred; the next cycle retries automatically. |
 | **Enabled** | The account participates in batch automation. |
 | **Disabled** | The account is retained but paused. |
 

@@ -22,6 +22,7 @@ from .account_health import mark_auth_error, mark_auth_ok, mark_auth_required
 from .captcha_ocr import captcha_ocr_available, ocr_captcha_provider
 from .config import PROJECT_ROOT, REFRESH_REQUEST_FILE, RUN_PID_FILE, STOP_FILE
 from .locking import LockUnavailable, account_login_lock
+from .runtime import ensure_persistent_ca_bundle
 
 CAPTCHA_REFRESH_SENTINEL = "__CAPTCHA_REFRESH__"
 CAPTCHA_OCR_ATTEMPTS = 3
@@ -200,6 +201,7 @@ def login_account(
     *,
     allow_ocr: bool = True,
 ) -> object:
+    ensure_persistent_ca_bundle(store)
     try:
         with account_login_lock(store, username):
             return _login_account_locked(
